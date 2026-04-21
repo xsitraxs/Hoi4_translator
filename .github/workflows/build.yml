@@ -38,12 +38,3 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/HOI4_Localisation_Translator.exe
-          body: |
-            ## HOI4 Localisation Translator
-
-            ### Установка
-            1. Скачай `HOI4_Localisation_Translator.exe`
-            2. Запусти — Python не нужен
-
-            ### Что нового
-            См. коммиты.
