@@ -1,7 +1,6 @@
 #Hoi4 localisation translator
 Программа с графическим интерфейсом для автоматического перевода локализации модов Hearts of Iron IV с английского на русский язык через Google Translate.
-https://img.shields.io/badge/Python-3.8+-blue
-https://img.shields.io/badge/License-MIT-green
+
 Что делает
 
 Копирует все .yml файлы из папки english оригинального мода
