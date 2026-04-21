@@ -1,4 +1,4 @@
-#Hoi4 localisation translator
+# Hoi4 localisation translator
 Программа с графическим интерфейсом для автоматического перевода локализации модов Hearts of Iron IV с английского на русский язык через Google Translate.
 
 Что делает
