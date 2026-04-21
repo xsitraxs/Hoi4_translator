@@ -3,12 +3,11 @@ name: Build Windows EXE
 on:
   push:
     tags:
-      - "v*"
-  workflow_dispatch:
+      - "v*" # Сработает при пуше тега, например v1.1.0
+  workflow_dispatch: # Позволяет запустить сборку вручную
 
-# Добавляем права для создания релиза
 permissions:
-  contents: write
+  contents: write # Критически важно для загрузки файла в Release
 
 jobs:
   build:
@@ -26,25 +25,18 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install deep-translator pyinstaller
 
       - name: Build EXE
         run: |
-          # Добавил --clean и убрал возможные конфликты с путями
-          pyinstaller --clean --onefile --noconsole --name "HOI4_Localisation_Translator" hoi4_translator.py
-
-      - name: Upload EXE as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: HOI4_Localisation_Translator_Build
-          path: dist/HOI4_Localisation_Translator.exe
+          # Сборка без иконки, одним файлом, без консоли
+          pyinstaller --clean --onefile --noconsole --name "HOI4_Localisation_Translator_v1.1.0" hoi4_translator.py
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/HOI4_Localisation_Translator.exe
-          # Можно добавить автоматическую генерацию описания из коммитов
-          generate_release_notes: true
+          files: dist/HOI4_Localisation_Translator_v1.1.0.exe
+          generate_release_notes: true # Автоматически создаст список изменений из коммитов
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
