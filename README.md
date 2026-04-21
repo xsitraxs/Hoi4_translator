@@ -40,9 +40,10 @@ bashpython hoi4_translator.py
 
 Структура мода-перевода
 my_translation_mod/
-├── descriptor.mod
-└── localisation/
-    └── russian/
+descriptor.mod
+localisation/
+russian/
+Нужные .yml файлы
 
 Лицензия
 MIT — используй свободно, изменяй, распространяй. См. LICENSE.
