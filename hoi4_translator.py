@@ -3,7 +3,6 @@ from tkinter import ttk, filedialog, scrolledtext
 import threading
 import os
 import re
-import shutil
 import time
 
 try:
@@ -15,69 +14,132 @@ except ImportError:
 # --- HOI4 localisation helpers ---
 
 PLACEHOLDER_RE = re.compile(r'(\$[^$]+\$|\[[\w\.]+\]|§[A-Za-z!]|\\n|\\t|£\w+|@\w+!|@\w+\[|\])')
+VALUE_RE = re.compile(r'^(\s*\S+:\d*\s*)"(.+)"(.*)$')
+CYRILLIC_RE = re.compile(r'[а-яёА-ЯЁ]')
+BATCH_SIZE = 40
 
-def split_placeholders(text):
-    parts = PLACEHOLDER_RE.split(text)
-    return parts
+def has_cyrillic(text):
+    return bool(CYRILLIC_RE.search(text))
 
-def translate_text(text, translator):
-    if not text.strip():
-        return text
-    parts = split_placeholders(text)
-    translated_parts = []
-    for part in parts:
-        if PLACEHOLDER_RE.fullmatch(part):
-            translated_parts.append(part)
-        elif part.strip():
-            try:
-                t = translator.translate(part)
-                translated_parts.append(t if t else part)
-                time.sleep(0.05)
-            except Exception:
-                translated_parts.append(part)
-        else:
-            translated_parts.append(part)
-    return ''.join(translated_parts)
+def protect_placeholders(text):
+    tokens = []
+    def replacer(m):
+        tokens.append(m.group(0))
+        return f'<<{len(tokens)-1}>>'
+    protected = PLACEHOLDER_RE.sub(replacer, text)
+    return protected, tokens
 
-VALUE_RE = re.compile(r'^(\s*\S+:\d*\s*)"(.*)"(.*)$')
+def restore_placeholders(text, tokens):
+    def replacer(m):
+        idx = int(m.group(1))
+        return tokens[idx] if idx < len(tokens) else m.group(0)
+    return re.sub(r'<<(\d+)>>', replacer, text)
 
-def process_line(line, translator):
-    m = VALUE_RE.match(line)
-    if not m:
-        return line
-    prefix, value, suffix = m.group(1), m.group(2), m.group(3)
-    if not value.strip():
-        return line
-    translated = translate_text(value, translator)
-    return f'{prefix}"{translated}"{suffix}\n'
+def translate_batch(texts, translator):
+    if not texts:
+        return []
+    protected_list, tokens_list = [], []
+    for t in texts:
+        p, tok = protect_placeholders(t)
+        protected_list.append(p)
+        tokens_list.append(tok)
+    SEP = ' ||| '
+    joined = SEP.join(protected_list)
+    try:
+        translated = translator.translate(joined)
+        if not translated:
+            return texts
+        parts = translated.split(SEP)
+        if len(parts) != len(texts):
+            # fallback: translate one by one
+            result = []
+            for p, tok in zip(protected_list, tokens_list):
+                try:
+                    t = translator.translate(p)
+                    result.append(restore_placeholders(t if t else p, tok))
+                    time.sleep(0.05)
+                except Exception:
+                    result.append(restore_placeholders(p, tok))
+            return result
+        return [restore_placeholders(p, tok) for p, tok in zip(parts, tokens_list)]
+    except Exception:
+        return texts
 
-def process_file(src_path, dst_path, translator, log_cb, skip_existing):
-    if skip_existing and os.path.exists(dst_path):
-        log_cb(f"  SKIP (exists): {os.path.basename(dst_path)}")
-        return 0
+def load_existing_translations(dst_path):
+    existing = {}
+    if not os.path.exists(dst_path):
+        return existing
+    try:
+        with open(dst_path, 'r', encoding='utf-8-sig') as f:
+            for line in f:
+                m = VALUE_RE.match(line)
+                if m:
+                    key = m.group(1).strip()
+                    value = m.group(2)
+                    if has_cyrillic(value):
+                        existing[key] = value
+    except Exception:
+        pass
+    return existing
 
+def process_file(src_path, dst_path, translator, log_cb, skip_translated_lines):
     os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+
+    existing = {}
+    if skip_translated_lines:
+        existing = load_existing_translations(dst_path)
+        if existing:
+            log_cb(f"  Найдено уже переведённых строк: {len(existing)}")
 
     with open(src_path, 'r', encoding='utf-8-sig') as f:
         lines = f.readlines()
 
-    out_lines = []
-    count = 0
+    # Первый проход — собираем индексы строк для перевода
+    to_translate_idx = []   # индексы в lines
+    to_translate_val = []   # значения для перевода
+    meta = []               # (prefix, suffix) для каждой строки с VALUE
+
+    out_lines = list(lines)
+
+    skipped = 0
     for i, line in enumerate(lines):
         stripped = line.strip()
         if i == 0 and stripped.startswith('l_'):
-            out_lines.append(re.sub(r'^(\s*)l_english:', r'\1l_russian:', line))
+            out_lines[i] = re.sub(r'^(\s*)l_english:', r'\1l_russian:', line)
             continue
-        if VALUE_RE.match(line):
-            out_lines.append(process_line(line, translator))
-            count += 1
-        else:
-            out_lines.append(line)
+        m = VALUE_RE.match(line)
+        if m:
+            key = m.group(1).strip()
+            prefix, value, suffix = m.group(1), m.group(2), m.group(3)
+            if not value.strip():
+                continue
+            if skip_translated_lines and key in existing:
+                out_lines[i] = f'{prefix}"{existing[key]}"{suffix}\n'
+                skipped += 1
+            else:
+                to_translate_idx.append(i)
+                to_translate_val.append(value)
+                meta.append((prefix, suffix))
+
+    # Второй проход — батч-перевод
+    total = len(to_translate_val)
+    translated_vals = []
+    for start in range(0, total, BATCH_SIZE):
+        batch = to_translate_val[start:start + BATCH_SIZE]
+        result = translate_batch(batch, translator)
+        translated_vals.extend(result)
+
+    # Собираем результат
+    for i, (line_idx, translated, (prefix, suffix)) in enumerate(
+            zip(to_translate_idx, translated_vals, meta)):
+        out_lines[line_idx] = f'{prefix}"{translated}"{suffix}\n'
 
     with open(dst_path, 'w', encoding='utf-8-sig') as f:
         f.writelines(out_lines)
 
-    return count
+    if skipped:
+        log_cb(f"  Пропущено (уже переведено): {skipped}")
+    return total
 
 def rename_dst(src_path, src_root, dst_root):
     rel = os.path.relpath(src_path, src_root)
@@ -89,7 +151,7 @@ def collect_yml_files(root):
     result = []
     for dirpath, _, filenames in os.walk(root):
         for fn in filenames:
-            if fn.endswith('.yml'):
+            if fn.endswith('.yml') and fn.lower() != 'languages.yml':
                 result.append(os.path.join(dirpath, fn))
     return result
 
@@ -100,7 +162,7 @@ class App(tk.Tk):
         super().__init__()
         self.title("HOI4 Localisation Translator")
         self.resizable(True, True)
-        self.minsize(620, 500)
+        self.minsize(620, 520)
         self.configure(bg='#1a1a1a')
 
         style = ttk.Style(self)
@@ -119,7 +181,6 @@ class App(tk.Tk):
         ttk.Label(self, text="Копирует, переименовывает и переводит .yml файлы через Google Translate",
                   foreground='#888').pack(pady=(0, 14))
 
-        # Source
         src_frame = ttk.Frame(self)
         src_frame.pack(fill='x', **pad)
         ttk.Label(src_frame, text="Папка english (оригинал):").pack(anchor='w')
@@ -129,7 +190,6 @@ class App(tk.Tk):
         ttk.Entry(row1, textvariable=self.src_var).pack(side='left', fill='x', expand=True)
         ttk.Button(row1, text="Обзор", command=self.browse_src, width=8).pack(side='left', padx=(6, 0))
 
-        # Dest
         dst_frame = ttk.Frame(self)
         dst_frame.pack(fill='x', **pad)
         ttk.Label(dst_frame, text="Папка russian (твой мод):").pack(anchor='w')
@@ -139,23 +199,30 @@ class App(tk.Tk):
         ttk.Entry(row2, textvariable=self.dst_var).pack(side='left', fill='x', expand=True)
         ttk.Button(row2, text="Обзор", command=self.browse_dst, width=8).pack(side='left', padx=(6, 0))
 
-        # Options
+        # Batch size slider
+        batch_frame = ttk.Frame(self)
+        batch_frame.pack(fill='x', **pad)
+        ttk.Label(batch_frame, text="Размер батча (строк за запрос):").pack(side='left')
+        self.batch_var = tk.IntVar(value=40)
+        self.batch_label = ttk.Label(batch_frame, text="40")
+        self.batch_label.pack(side='right')
+        slider = ttk.Scale(batch_frame, from_=10, to=80, variable=self.batch_var, orient='horizontal',
+                           command=lambda v: self.batch_label.config(text=str(int(float(v)))))
+        slider.pack(side='right', padx=(8, 8), fill='x', expand=True)
+
         opt_frame = ttk.Frame(self)
         opt_frame.pack(fill='x', **pad)
         self.skip_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(opt_frame, text="Пропускать уже переведённые файлы", variable=self.skip_var).pack(anchor='w')
+        ttk.Checkbutton(opt_frame, text="Пропускать уже переведённые строки (с кириллицей)", variable=self.skip_var).pack(anchor='w')
 
-        # Progress
         self.progress = ttk.Progressbar(self, style='green.Horizontal.TProgressbar', mode='determinate')
         self.progress.pack(fill='x', padx=12, pady=(10, 4))
         self.status_var = tk.StringVar(value="Готов к работе")
         ttk.Label(self, textvariable=self.status_var, foreground='#aaa').pack(anchor='w', padx=14)
 
-        # Start button
         self.start_btn = ttk.Button(self, text="▶  Начать перевод", command=self.start)
         self.start_btn.pack(pady=10, ipadx=20, ipady=4)
 
-        # Log
         ttk.Label(self, text="Лог:").pack(anchor='w', padx=12)
         self.log = scrolledtext.ScrolledText(self, height=12, bg='#111', fg='#bfbfbf',
                                               font=('Consolas', 9), state='disabled',
@@ -190,6 +257,8 @@ class App(tk.Tk):
         if not os.path.isdir(src):
             self.log_line(f"Папка не найдена: {src}")
             return
+        global BATCH_SIZE
+        BATCH_SIZE = int(self.batch_var.get())
         self.start_btn.config(state='disabled')
         threading.Thread(target=self.run_translation, args=(src, dst), daemon=True).start()
 
@@ -199,7 +268,7 @@ class App(tk.Tk):
 
         files = collect_yml_files(src)
         total = len(files)
-        self.log_line(f"Найдено файлов: {total}")
+        self.log_line(f"Найдено файлов: {total}, размер батча: {BATCH_SIZE}")
         self.progress['maximum'] = total
         self.progress['value'] = 0
 
