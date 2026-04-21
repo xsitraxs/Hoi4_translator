@@ -89,7 +89,7 @@ my_translation_mod/
 ├── descriptor.mod
 └── localisation/
     └── russian/
-        
+        ├── Ваши .yml файлы
 ```
 
 ---
