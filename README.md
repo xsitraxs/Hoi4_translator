@@ -43,9 +43,6 @@ my_translation_mod/
 ├── descriptor.mod
 └── localisation/
     └── russian/
-        ├── _metro_events_l_russian.yml
-        ├── _metro_units_l_russian.yml
-        └── ...
 
 Лицензия
 MIT — используй свободно, изменяй, распространяй. См. LICENSE.
