@@ -12,7 +12,9 @@ try:
 except ImportError:
     TRANSLATOR_OK = False
 
-
+# ---------------------------------------------------------------------------
+# Константы
+# ---------------------------------------------------------------------------
 
 PLACEHOLDER_RE = re.compile(
     r'(\$[^$]+\$|\[[\w\.\[\]]+\]|§[A-Za-z!]|\\n|\\t|£\w+|@\w+[\[!]?|\])'
@@ -21,7 +23,9 @@ VALUE_RE     = re.compile(r'^(\s*\S+:\d*\s*)"(.+)"(.*)$')
 CYRILLIC_RE  = re.compile(r'[а-яёА-ЯЁ]')
 SETTINGS_FILE = os.path.join(os.path.expanduser('~'), '.hoi4_translator_settings.json')
 
-
+# ---------------------------------------------------------------------------
+# Логика перевода
+# ---------------------------------------------------------------------------
 
 def has_cyrillic(text):
     return bool(CYRILLIC_RE.search(text))
@@ -52,7 +56,7 @@ def translate_batch(texts, translator, retries=3):
     SEP = ' ||| '
     joined = SEP.join(protected_list)
 
-    
+    # Попытки с паузой при ошибке
     for attempt in range(retries):
         try:
             translated = translator.translate(joined)
@@ -70,6 +74,7 @@ def translate_batch(texts, translator, retries=3):
             else:
                 pass
 
+    # Фоллбек: переводим по одной строке
     result = []
     for p, tok in zip(protected_list, tokens_list):
         for attempt in range(retries):
@@ -137,7 +142,7 @@ def process_file(src_path, dst_path, translator, log_cb, skip_translated, batch_
             to_translate_val.append(value)
             meta.append((prefix, suffix))
 
-   
+    # Батч-перевод
     total            = len(to_translate_val)
     translated_vals  = []
     for start in range(0, total, batch_size):
@@ -176,7 +181,9 @@ def collect_yml_files(root):
                 result.append(os.path.join(dirpath, fn))
     return result
 
-
+# ---------------------------------------------------------------------------
+# Настройки
+# ---------------------------------------------------------------------------
 
 def load_settings():
     try:
@@ -192,6 +199,9 @@ def save_settings(data):
     except Exception:
         pass
 
+# ---------------------------------------------------------------------------
+# GUI
+# ---------------------------------------------------------------------------
 
 class App(tk.Tk):
     def __init__(self):
@@ -266,7 +276,7 @@ class App(tk.Tk):
         bf = ttk.Frame(self); bf.pack(fill='x', **pad)
         ttk.Label(bf, text="Размер батча:").pack(side='left')
         self.batch_var   = tk.IntVar(value=40)
-        self.batch_label = ttk.Label(bf, text="40", width=3)
+        self.batch_label = ttk.Label(bf, text="20", width=3)
         self.batch_label.pack(side='right')
         ttk.Scale(bf, from_=5, to=80, variable=self.batch_var, orient='horizontal',
                   command=lambda v: self.batch_label.config(text=str(int(float(v))))).pack(
@@ -299,7 +309,7 @@ class App(tk.Tk):
         self.stop_btn  = ttk.Button(btn_frame, text="⏹  Стоп", command=self.stop,
                                     width=12, state='disabled')
         self.stop_btn.pack(side='left', padx=6, ipady=4)
-        self.clear_btn = ttk.Button(btn_frame, text="🗑  Очистить лог", command=self.clear_log, width=14)
+        self.clear_btn = ttk.Button(btn_frame, text="Очистить лог", command=self.clear_log, width=14)
         self.clear_btn.pack(side='left', padx=6, ipady=4)
 
         # Лог
