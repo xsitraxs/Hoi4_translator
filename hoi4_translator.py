@@ -275,7 +275,7 @@ class App(tk.Tk):
         # Слайдер батча
         bf = ttk.Frame(self); bf.pack(fill='x', **pad)
         ttk.Label(bf, text="Размер батча:").pack(side='left')
-        self.batch_var   = tk.IntVar(value=40)
+        self.batch_var   = tk.IntVar(value=20)
         self.batch_label = ttk.Label(bf, text="20", width=3)
         self.batch_label.pack(side='right')
         ttk.Scale(bf, from_=5, to=80, variable=self.batch_var, orient='horizontal',
@@ -303,14 +303,14 @@ class App(tk.Tk):
         ttk.Label(sf2, textvariable=self.elapsed_var, foreground='#666').pack(side='right')
 
         # Кнопки
-        btn_frame = ttk.Frame(self); btn_frame.pack(pady=8)
-        self.start_btn = ttk.Button(btn_frame, text="▶  Начать перевод", command=self.start, width=20)
-        self.start_btn.pack(side='left', padx=6, ipady=4)
-        self.stop_btn  = ttk.Button(btn_frame, text="⏹  Стоп", command=self.stop,
-                                    width=12, state='disabled')
-        self.stop_btn.pack(side='left', padx=6, ipady=4)
-        self.clear_btn = ttk.Button(btn_frame, text="Очистить лог", command=self.clear_log, width=14)
-        self.clear_btn.pack(side='left', padx=6, ipady=4)
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(fill='x', padx=12, pady=8)
+        self.start_btn = ttk.Button(btn_frame, text="Начать перевод", command=self.start)
+        self.start_btn.pack(side='left', fill='x', expand=True, padx=(0, 4), ipady=6)
+        self.stop_btn  = ttk.Button(btn_frame, text="Стоп", command=self.stop, state='disabled')
+        self.stop_btn.pack(side='left', fill='x', expand=True, padx=4, ipady=6)
+        self.clear_btn = ttk.Button(btn_frame, text="Очистить логи", command=self.clear_log)
+        self.clear_btn.pack(side='left', fill='x', expand=True, padx=(4, 0), ipady=6)
 
         # Лог
         ttk.Label(self, text="Лог:").pack(anchor='w', padx=12)
@@ -416,7 +416,7 @@ class App(tk.Tk):
 
         for i, fp in enumerate(files):
             if self._stop_event.is_set():
-                self.log_line("⏹ Перевод остановлен пользователем.", 'warn')
+                self.log_line("[СТОП] Перевод остановлен пользователем.", 'warn')
                 break
 
             dst_path = rename_dst(fp, src, dst)
@@ -428,7 +428,7 @@ class App(tk.Tk):
                 n = process_file(fp, dst_path, translator, self.log_line,
                                  skip, batch_size, self._stop_event)
                 if n is None:
-                    self.log_line("⏹ Перевод остановлен пользователем.", 'warn')
+                    self.log_line("[СТОП] Перевод остановлен пользователем.", 'warn')
                     break
                 total_lines += n
                 self.log_line(f"  ✓ переведено строк: {n}", 'success')
