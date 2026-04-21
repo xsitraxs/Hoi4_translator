@@ -6,6 +6,10 @@ on:
       - "v*"
   workflow_dispatch:
 
+# Добавляем права для создания релиза
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -21,16 +25,18 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install deep-translator pyinstaller
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Build EXE
         run: |
-          pyinstaller --onefile --noconsole --name "HOI4_Localisation_Translator" hoi4_translator.py
+          # Добавил --clean и убрал возможные конфликты с путями
+          pyinstaller --clean --onefile --noconsole --name "HOI4_Localisation_Translator" hoi4_translator.py
 
       - name: Upload EXE as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: HOI4_Localisation_Translator
+          name: HOI4_Localisation_Translator_Build
           path: dist/HOI4_Localisation_Translator.exe
 
       - name: Create GitHub Release
@@ -38,3 +44,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/HOI4_Localisation_Translator.exe
+          # Можно добавить автоматическую генерацию описания из коммитов
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
