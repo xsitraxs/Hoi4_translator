@@ -1,3 +1,4 @@
+```gitignore
 # Compiled Python files
 *.pyc
 __pycache__/
@@ -11,7 +12,7 @@ pipenv.lock
 # Environment variables
 .env
 .env.local
-.env.*
+*.env.*
 
 # Logs
 *.log
@@ -21,44 +22,19 @@ pipenv.lock
 coverage/
 htmlcov/
 
-# Distribution / packaging
-dist/
-build/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Pytest cache
-.pytest_cache/
-.hypothesis/
-
-# MyPy cache
-.mypy_cache/
-
-# Byte-compiled / optimized / DLL files
-*.pyc
-*.pyo
-*.pyd
-
-# C extensions
-*.so
-
-# Editor files
+# IDE files
 .vscode/
 .idea/
 *.swp
 *.swo
+*.tmp
 
-# OS generated files
+# OS files
 .DS_Store
 Thumbs.db
 
-# Temporary files
-*.tmp
-*.temp
-
-# GitHub-specific
-.github/dependabot.yml
-
-# Local configuration
-config.local.json
+# Build artifacts
+dist/
+build/
+*.egg-info/
+```
