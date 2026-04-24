@@ -525,6 +525,11 @@ class App(tk.Tk):
         self.api_key_var = tk.StringVar()
         self.api_entry = ttk.Entry(row2, textvariable=self.api_key_var, show="*", width=40, state='disabled')
         self.api_entry.pack(side='left', padx=5)
+        self.verify_btn = ttk.Button(row2, text="Проверить API", command=self.verify_deepl_api, state='disabled', width=12)
+        self.verify_btn.pack(side='left', padx=5)
+        self.api_status_var = tk.StringVar(value="")
+        self.api_status_lbl = ttk.Label(row2, textvariable=self.api_status_var, foreground='#aaa', width=15)
+        self.api_status_lbl.pack(side='left', padx=5)
 
         # Параметры
         f_params = ttk.Frame(self); f_params.pack(fill='x', **pad)
@@ -571,9 +576,57 @@ class App(tk.Tk):
         if self.engine_var.get() == "DeepL":
             self.api_entry.config(state='normal')
             self.api_lbl.config(foreground='#fff')
+            self.verify_btn.config(state='normal')
         else:
             self.api_entry.config(state='disabled')
             self.api_lbl.config(foreground='#555')
+            self.verify_btn.config(state='disabled')
+            self.api_status_var.set("")
+
+    def verify_deepl_api(self):
+        """Проверяет валидность API ключа DeepL"""
+        api_key = self.api_key_var.get().strip()
+        if not api_key:
+            self.api_status_var.set("Нет ключа")
+            self.api_status_lbl.config(foreground='#ff6b6b')
+            return
+
+        self.api_status_var.set("Проверка...")
+        self.api_status_lbl.config(foreground='#ffa500')
+        self.verify_btn.config(state='disabled')
+
+        def check():
+            try:
+                from deep_translator import DeepL
+                translator = DeepL(api_key=api_key, source="en", target="ru", use_pro=False)
+                # Пробуем сделать тестовый перевод
+                test_result = translator.translate("test")
+                if test_result:
+                    return True, "OK"
+                return False, "Ошибка ответа"
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "authorization" in error_msg or "403" in error_msg or "invalid" in error_msg:
+                    return False, "Неверный ключ"
+                elif "quota" in error_msg or "429" in error_msg:
+                    return False, "Лимит исчерпан"
+                elif "connection" in error_msg or "timeout" in error_msg:
+                    return False, "Нет сети"
+                else:
+                    return False, "Ошибка API"
+
+        def on_done(success, msg):
+            if success:
+                self.api_status_var.set("✓ Валиден")
+                self.api_status_lbl.config(foreground='#69db7c')
+                self.log_line("DeepL API ключ успешно проверен!", 'success')
+            else:
+                self.api_status_var.set(f"✗ {msg}")
+                self.api_status_lbl.config(foreground='#ff6b6b')
+                self.log_line(f"DeepL API проверка не пройдена: {msg}", 'error')
+            self.verify_btn.config(state='normal')
+
+        threading.Thread(target=lambda: on_done(*check()), daemon=True).start()
 
     def browse_src(self):
         d = filedialog.askdirectory(title="Выбери папку с оригинальной локализацией")
