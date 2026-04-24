@@ -1,40 +1,52 @@
-```gitignore
-# Compiled Python files
-*.pyc
+```
+# Python
 __pycache__/
-
-# Dependencies
-.venv/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
 venv/
-pip-log.txt
-pipenv.lock
-
-# Environment variables
+.venv/
+.ENV
 .env
+.env.*
 .env.local
-*.env.*
-
-# Logs
-*.log
-
-# Coverage reports
+.env.dev
+.env.development
+.env.test
+.env.testing
+.env.prod
+.env.production
+.python-version
+.pytest_cache/
+.mypy_cache/
 .coverage
 coverage/
 htmlcov/
+.tox/
+nox/
+.hypothesis/
 
-# IDE files
-.vscode/
-.idea/
-*.swp
-*.swo
-*.tmp
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Build artifacts
+# Build and distribution artifacts
 dist/
 build/
 *.egg-info/
+.eggs/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+pip-log.txt
+pip-delete-this-directory.txt
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Icon?
 ```
