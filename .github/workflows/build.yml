@@ -25,18 +25,18 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install deep-translator pyinstaller
+          pip install deep-translator pyinstaller aiohttp jpype1
 
       - name: Build EXE
         run: |
           # Сборка без иконки, одним файлом, без консоли
-          pyinstaller --clean --onefile --noconsole --name "HOI4_Localisation_Translator" hoi4_translator.py
+          pyinstaller --clean --onefile --noconsole --name "HOI4_Pro_Translator" hoi4_translator.py
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/HOI4_Localisation_Translator.exe
+          files: dist/HOI4_Pro_Translator.exe
           generate_release_notes: true # Автоматически создаст список изменений из коммитов
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
