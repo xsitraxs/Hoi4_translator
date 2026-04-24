@@ -36,7 +36,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/HOI4_Pro_Translator.exe
+          files: dist/hoi4_translator.exe
           generate_release_notes: true # Автоматически создаст список изменений из коммитов
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
