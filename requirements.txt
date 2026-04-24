@@ -1,1 +1,3 @@
 deep-translator
+aiohttp
+jpype1
