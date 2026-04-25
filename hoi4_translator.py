@@ -668,13 +668,12 @@ def process_file_sync(
     rel_path = os.path.basename(src_path)
 
     async def run_translate():
-        async with translator:
-            return await translator.translate_batch(
-                to_translate_val, target_lang,
-                keys=to_translate_keys,
-                file_ctx=rel_path,
-                line_progress_cb=line_progress_cb,
-            )
+        return await translator.translate_batch(
+            to_translate_val, target_lang,
+            keys=to_translate_keys,
+            file_ctx=rel_path,
+            line_progress_cb=line_progress_cb,
+        )
 
     try:
         future = asyncio.run_coroutine_threadsafe(run_translate(), loop)
@@ -1124,6 +1123,13 @@ class App(tk.Tk):
 
         try:
             translator = AsyncTranslator(engine_name, api_key=key, source_lang=source_ln)
+            
+            # Инициализируем aiohttp сессию и семафоры ОДИН раз для всех файлов
+            asyncio.run_coroutine_threadsafe(
+                translator.__aenter__(), 
+                self._async_loop
+            ).result()
+
             files = collect_yml_files(src)
             total_files = len(files)
 
@@ -1253,6 +1259,16 @@ class App(tk.Tk):
             logger.exception("Critical error in translation thread")
             self.log_line(f"Критическая ошибка: {e}", 'error')
         finally:
+            # Закрываем ресурсы (БД, aiohttp сессию, JVM) после обработки всех файлов
+            if 'translator' in locals():
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        translator.__aexit__(None, None, None), 
+                        self._async_loop
+                    ).result()
+                except Exception as e:
+                    logger.error(f"Ошибка при закрытии ресурсов: {e}")
+
             self.start_btn.config(state='normal')
             self.stop_btn.config(state='disabled')
 
