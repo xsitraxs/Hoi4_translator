@@ -36,11 +36,11 @@ jobs:
                 --onefile `
                 --noconsole `
                 --name "Hoi4_Translator" `
+                --collect-all="deep_translator" `
                 --hidden-import="aiohttp" `
-                --hidden-import="deep_translator" `
-                --hidden-import="deep_translator.google_trans" `
-                --hidden-import="deep_translator.mymemory_translator" `
-                --hidden-import="deep_translator.deepl_translator" `
+                --hidden-import="aiohttp.connector" `
+                --hidden-import="aiohttp.client" `
+                --hidden-import="sqlite3" `
                 --add-data "hoi_logic.jar;." `
                 hoi4_translator.py
           } else {
@@ -50,11 +50,11 @@ jobs:
                 --onefile `
                 --noconsole `
                 --name "Hoi4_Translator" `
+                --collect-all="deep_translator" `
                 --hidden-import="aiohttp" `
-                --hidden-import="deep_translator" `
-                --hidden-import="deep_translator.google_trans" `
-                --hidden-import="deep_translator.mymemory_translator" `
-                --hidden-import="deep_translator.deepl_translator" `
+                --hidden-import="aiohttp.connector" `
+                --hidden-import="aiohttp.client" `
+                --hidden-import="sqlite3" `
                 hoi4_translator.py
           }
         shell: pwsh
