@@ -3,7 +3,7 @@
 > Автоматический переводчик локализационных файлов Hearts of Iron IV с поддержкой множества движков, кэшированием, валидацией плейсхолдеров и постобработкой текста.
 
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue?logo=python)
-![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
+![Platform](https://img.shields.io/badge/Platform-Windows)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ---
