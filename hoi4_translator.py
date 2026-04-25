@@ -107,6 +107,8 @@ class PostProcessor:
         Применяет все правила постобработки.
         original передаётся для проверок (например, сохранение регистра).
         """
+        
+        text = cls._ENG_QUOTE_RE.sub(r'«\1»', text)
         if not text:
             return text
 
@@ -329,7 +331,6 @@ class JavaTranslatorService:
     def shutdown(self):
         if self._jvm_started and jpype.isJVMStarted():
             try:
-                jpype.shutdownJVM()
                 logger.info("JVM shut down.")
             except Exception:
                 pass
@@ -695,14 +696,17 @@ def process_file_sync(
         prefix, value, suffix = m.group(1), m.group(2), m.group(3)
         key = prefix.strip()
 
+        # Жестко задаем ровно один пробел в начале строки
+        normalized_prefix = f" {prefix.lstrip()}"
+
         if skip_translated and key in existing:
-            out_lines[i] = f'{prefix}"{existing[key]}"{suffix}\n'
+            out_lines[i] = f'{normalized_prefix}"{existing[key]}"{suffix}\n'
             skipped += 1
         else:
             to_translate_idx.append(i)
             to_translate_val.append(value)
             to_translate_keys.append(key)
-            meta.append((prefix, suffix))
+            meta.append((normalized_prefix, suffix))
 
     total = len(to_translate_val)
     if total == 0:
