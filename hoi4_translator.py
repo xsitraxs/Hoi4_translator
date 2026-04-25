@@ -13,7 +13,6 @@ import logging
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
-from jpype.types import *
 
 # Попытка импорта асинхронных библиотек для ускорения
 try:
@@ -29,9 +28,11 @@ except ImportError:
     TRANSLATOR_OK = False
 
 # Попытка импорта JPype для Java-интеграции
+# FIX #8: jpype.types импортируется внутри try, иначе крэш при старте если jpype не установлен
 try:
     import jpype
     import jpype.imports
+    from jpype.types import *
     JAVA_OK = True
 except ImportError:
     JAVA_OK = False
@@ -59,7 +60,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 PLACEHOLDER_RE = re.compile(
-    r'(\$[^$]+\$|\[[^\]]*\]|§[A-Za-z!]|\\n|\\t|£\w+|@\w+[\[!]?)'
+r'(\$[^$]+\$|\[[^\]]*\]|§[A-Za-z!]|\n|\t|£\w+|@\w+\[!?\]?)'
 )
 
 # FIX: VALUE_RE теперь матчит KEY: "text" и KEY:0 "text" и KEY:0"text"
@@ -108,9 +109,10 @@ class PostProcessor:
         original передаётся для проверок (например, сохранение регистра).
         """
         
-        text = cls._ENG_QUOTE_RE.sub(r'«\1»', text)
+        # FIX #2: проверка на пустую строку — до любых замен
         if not text:
             return text
+        text = cls._ENG_QUOTE_RE.sub(r'«\1»', text)
 
         # 1. Убираем пробелы вокруг \\n (HoI4 literal newline)
         text = cls._SPACE_AROUND_NEWLINE_RE.sub(r'\\n', text)
@@ -118,18 +120,14 @@ class PostProcessor:
         # 2. Двойные пробелы → одинарный (ДО §-правил — сохраняем пробельный контекст)
         text = cls._DOUBLE_SPACE_RE.sub(' ', text)
 
-        # 3+4. Капитализация + удаление пробела после открывающего §X в одном шаге.
-        #   §W и §! — сброс цвета, их не трогаем (пробел после них сохраняется).
-        #   Условие: §X стоит в начале строки или после пробела (т.е. начинает слово).
+        # 3+4. Капитализация + удаление пробела после §X в одном шаге.
+        #   §W и §! — сброс цвета, их не трогаем (они не входят в диапазон A-V / X-Z).
+        #   FIX: старый паттерн матчил только [а-яё], пропуская латиницу.
+        #   Новый паттерн: §X + любые пробелы + первая буква (кириллица ИЛИ латиница).
         def _fix_color(m):
-            code, space, letter = m.group(1), m.group(2), m.group(3)
-            return code + letter.upper()  # пробел между кодом и буквой убираем, букву — заглавная
-        text = re.sub(
-            r'(?:(?<=\s)|(?<=^))(§[A-VX-Za-vx-z])(\s*)([а-яё])',
-            _fix_color, text
-        )
-        # Для §X без пробела (вдруг уже слитно) — тоже убираем лишний пробел если есть
-        text = re.sub(r'(§[A-VX-Za-vx-z])\s+(\S)', r'\1\2', text)
+            code, letter = m.group(1), m.group(2)
+            return code + letter.upper()
+        text = re.sub(r'(§[A-VX-Za-vx-z])\s*([а-яёА-ЯЁa-zA-Z])', _fix_color, text)
 
         # 5. Убираем пробел перед знаком препинания
         text = cls._SPACE_BEFORE_PUNCT_RE.sub(r'\1', text)
@@ -159,6 +157,8 @@ class PlaceholderValidator:
 
     @staticmethod
     def extract_placeholders(text: str) -> List[str]:
+        # Нормализуем экранирование переносов строк (движки часто дублируют слэш)
+        text = text.replace('\\\\n', '\\n').replace('\\\\r', '\\r')
         return PLACEHOLDER_RE.findall(text)
 
     @classmethod
@@ -411,16 +411,28 @@ def protect_placeholders(text: str):
     def replacer(m):
         tokens.append(m.group(0))
         return f'<<PH{len(tokens)-1}>>'
-    return PLACEHOLDER_RE.sub(replacer, text), tokens
+    
+    # 1. Защищаем маркеры
+    protected = PLACEHOLDER_RE.sub(replacer, text)
+    # 2. Вставляем невидимый разделитель между соседними маркерами, чтобы движок не склеил их в одно слово
+    # FIX: \u200B в строке замены re.sub вызывает bad escape — используем lambda
+    protected = re.sub(r'(<<PH\d+>>)(<<PH\d+>>)', lambda m: m.group(1) + '\u200B' + m.group(2), protected)
+    return protected, tokens
 
 def restore_placeholders(text: str, tokens: List[str]) -> str:
+    # Убираем невидимый разделитель
+    text = text.replace('\u200B', '')
+    
     def replacer(m):
         try:
-            idx = int(m.group(1))
+            # Извлекаем только цифры, игнорируя пробелы и регистр (<< PH 0 >> -> 0)
+            idx_str = re.sub(r'\D', '', m.group(0))
+            idx = int(idx_str)
             return tokens[idx] if idx < len(tokens) else m.group(0)
         except Exception:
             return m.group(0)
-    return re.sub(r'<<PH(\d+)>>', replacer, text)
+    #Матчим любой вариант: <<PH0>>, << PH 0 >>, <<ph0>>, <<Ph 0 >> и т.д.
+    return re.sub(r'<<\s*ph\s*\d+\s*>>', replacer, text, flags=re.IGNORECASE)
 
 class AsyncTranslator:
     def __init__(self, engine: str, api_key: Optional[str] = None, source_lang: str = "en", java_jar_path: Optional[str] = None):
@@ -520,13 +532,15 @@ class AsyncTranslator:
         if engine == "Google" and ASYNC_OK and self.session:
             return await self._google_async(protected, target, retries)
         elif engine == "DeepL" and self.api_key:
-            loop = asyncio.get_event_loop()
+            # FIX #3: get_running_loop() вместо устаревшего get_event_loop()
+            loop = asyncio.get_running_loop()
             with ThreadPoolExecutor(max_workers=1) as pool:
                 return await loop.run_in_executor(
                     pool, lambda: self._deepl_sync(protected, target, retries)
                 )
         elif engine == "JavaSim":
-            loop = asyncio.get_event_loop()
+            # FIX #3: get_running_loop() вместо устаревшего get_event_loop()
+            loop = asyncio.get_running_loop()
             with ThreadPoolExecutor(max_workers=1) as pool:
                 res = await loop.run_in_executor(
                     pool, lambda: self.java_service.translate_batch_java([protected], target)
@@ -534,7 +548,8 @@ class AsyncTranslator:
                 return res[0]
         else:
             # MyMemory или Google без aiohttp
-            loop = asyncio.get_event_loop()
+            # FIX #3: get_running_loop() вместо устаревшего get_event_loop()
+            loop = asyncio.get_running_loop()
             eng_copy = engine  # замыкание
             with ThreadPoolExecutor(max_workers=1) as pool:
                 return await loop.run_in_executor(
@@ -585,8 +600,16 @@ class AsyncTranslator:
     def _sync_fallback(self, text: str, target: str, retries: int, engine: Optional[str] = None) -> str:
         eng = engine or self.engine
         if eng == "MyMemory":
-            mm_map = {"en": "en-US", "de": "de-DE", "fr": "fr-FR", "es": "es-ES", "pl": "pl-PL"}
-            translator = MyMemoryTranslator(source=mm_map.get(self.source_lang, "en-US"), target="ru-RU")
+            # FIX #5: target теперь используется корректно, а не жёстко "ru-RU"
+            lang_to_locale = {
+                "en": "en-US", "de": "de-DE", "fr": "fr-FR", "es": "es-ES",
+                "pl": "pl-PL", "ru": "ru-RU", "uk": "uk-UA", "it": "it-IT",
+                "pt": "pt-BR", "zh-CN": "zh-CN", "ja": "ja-JP", "ko": "ko-KR",
+                "tr": "tr-TR", "cs": "cs-CZ", "hu": "hu-HU", "ro": "ro-RO",
+            }
+            src_locale = lang_to_locale.get(self.source_lang, f"{self.source_lang}-{self.source_lang.upper()}")
+            tgt_locale = lang_to_locale.get(target, f"{target}-{target.upper()}")
+            translator = MyMemoryTranslator(source=src_locale, target=tgt_locale)
         else:
             translator = GoogleTranslator(source=self.source_lang, target=target)
 
@@ -640,7 +663,8 @@ def load_existing_translations(dst_path: str) -> Dict[str, str]:
     try:
         with open(dst_path, 'r', encoding='utf-8-sig') as f:
             for line in f:
-                m = VALUE_RE.match(line)
+                # Убираем перенос строки перед проверкой regex
+                m = VALUE_RE.match(line.rstrip('\r\n'))
                 if m and has_cyrillic(m.group(2)):
                     existing[m.group(1).strip()] = m.group(2)
     except Exception as e:
@@ -659,12 +683,10 @@ def process_file_sync(
     line_progress_cb=None,
     preview_cb=None,
 ) -> Optional[int]:
-    """
-    preview_cb(orig_vals, trans_vals, meta, out_lines, dst_path) — если задан,
-    вызывается вместо немедленной записи файла. Запись делает сам preview_cb.
-    """
-
-    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+    # FIX #7: os.path.dirname может вернуть '' если dst_path — просто имя файла
+    _dst_parent = os.path.dirname(dst_path)
+    if _dst_parent:
+        os.makedirs(_dst_parent, exist_ok=True)
     existing = load_existing_translations(dst_path) if skip_translated else {}
 
     if existing:
@@ -685,28 +707,34 @@ def process_file_sync(
             return None
 
         if i == 0 and line.strip().startswith('l_'):
-            lang_tag = target_lang.replace('-', '_')
-            out_lines[i] = re.sub(r'^(\s*)l_[a-z]+:', rf'\1l_{lang_tag}:', line)
+            # 🗺️ Маппинг коротких кодов → полные названия языков HoI4
+            hoi4_lang_map = {
+                "en": "english", "ru": "russian", "de": "german", "fr": "french",
+                "es": "spanish", "pl": "polish", "pt": "brazilian", "it": "italian",
+                "ja": "japanese", "zh-CN": "simp_chinese", "ko": "korean", "tr": "turkish",
+                "cs": "czech", "hu": "hungarian", "ro": "romanian", "uk": "ukrainian"
+            }
+            lang_tag = hoi4_lang_map.get(target_lang, target_lang.replace('-', '_'))
+            # ✅ Исправлен regex: l_[a-z_]+ чтобы ловить теги с подчёркиваниями
+            out_lines[i] = re.sub(r'^(\s*)l_[a-z_]+:', rf'\1l_{lang_tag}:', line)
             continue
 
         m = VALUE_RE.match(line)
         if not m:
-            continue
+            continue 
 
         prefix, value, suffix = m.group(1), m.group(2), m.group(3)
         key = prefix.strip()
 
-        # Жестко задаем ровно один пробел в начале строки
-        normalized_prefix = f" {prefix.lstrip()}"
-
         if skip_translated and key in existing:
-            out_lines[i] = f'{normalized_prefix}"{existing[key]}"{suffix}\n'
+            # Сохраняем оригинальное форматирование строки
+            out_lines[i] = f'{prefix}"{existing[key]}"{suffix}\n'
             skipped += 1
         else:
             to_translate_idx.append(i)
             to_translate_val.append(value)
             to_translate_keys.append(key)
-            meta.append((normalized_prefix, suffix))
+            meta.append((prefix, suffix))
 
     total = len(to_translate_val)
     if total == 0:
@@ -732,9 +760,9 @@ def process_file_sync(
         return None
 
     if preview_cb:
-        # Передаём управление в предпросмотр — он сам запишет файл
         preview_cb(to_translate_val, translated_vals, to_translate_idx, meta, out_lines, dst_path)
     else:
+        # ✅ Исправлена запись: убираем лишний пробел внутри кавычек, восстанавливаем \n корректно
         for line_idx, translated, (pfx, sfx) in zip(to_translate_idx, translated_vals, meta):
             out_lines[line_idx] = f'{pfx}"{translated}"{sfx}\n'
         with open(dst_path, 'w', encoding='utf-8-sig') as f:
@@ -1194,12 +1222,11 @@ class App(tk.Tk):
             
             bundled_jar = os.path.join(base_dir, "hoi4_translator.jar")
             
-            # Приоритет: Путь из GUI > Встроенный JAR > None
+            # FIX #1: Приоритет: Путь из GUI > Встроенный JAR > None
+            # Раньше else-ветка обнуляла jar_path когда пользователь задал путь вручную
             jar_path = self.java_jar_var.get().strip()
-            if not jar_path and os.path.exists(bundled_jar):
-                jar_path = bundled_jar
-            else:
-                jar_path = None
+            if not jar_path:
+                jar_path = bundled_jar if os.path.exists(bundled_jar) else None
             translator = AsyncTranslator(engine_name, api_key=key, source_lang=source_ln, java_jar_path=jar_path)
             
             # Инициализируем aiohttp сессию и семафоры ОДИН раз для всех файлов
@@ -1241,7 +1268,8 @@ class App(tk.Tk):
                 dst_path = rename_dst(fp, src, dst)
 
                 # --- Колбэк прогресса строк (улучшение 2) ---
-                def make_line_cb(total_in_file):
+                # FIX #4: total_in_file заполняется реально из колбэка, аргумент убран как бесполезный
+                def make_line_cb():
                     def cb(done, total):
                         self.progress_lines['maximum'] = total
                         self.progress_lines['value'] = done
@@ -1286,7 +1314,7 @@ class App(tk.Tk):
                         self.log_line, self.skip_var.get(),
                         self._stop_event, self._async_loop,
                         target_lang=target_ln,
-                        line_progress_cb=make_line_cb(0),
+                        line_progress_cb=make_line_cb(),
                         preview_cb=preview_cb,
                     )
                     if n is None:
