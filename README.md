@@ -1,4 +1,4 @@
-# HOI4 Localisation Translator PRO
+# HOI4 Localisation Translator
 
 > Автоматический переводчик локализационных файлов Hearts of Iron IV с поддержкой множества движков, кэшированием, валидацией плейсхолдеров и постобработкой текста.
 
