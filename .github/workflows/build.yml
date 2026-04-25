@@ -3,11 +3,11 @@ name: Build Windows EXE
 on:
   push:
     tags:
-      - "v*" # Сработает при пуше тега, например v1.3.0
-  workflow_dispatch: # Позволяет запустить сборку вручную
+      - "v*"         # Срабатывает при пуше тега, например v1.3.0
+  workflow_dispatch:  # Можно запустить вручную из вкладки Actions
 
 permissions:
-  contents: write # Критически важно для загрузки файла в Release
+  contents: write     # Нужно для создания Release и загрузки файлов
 
 jobs:
   build:
@@ -25,25 +25,53 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install deep-translator pyinstaller aiohttp jpype1
+          pip install deep-translator aiohttp jpype1 pyinstaller
 
       - name: Build EXE
         run: |
-          # Умная сборка: проверяем наличие Java-модуля
           if (Test-Path "hoi_logic.jar") {
-              Write-Host "Found hoi_logic.jar! Packaging with Java Support."
-              pyinstaller --clean --onefile --noconsole --name "HOI4_Translator_PRO" --add-data "hoi_logic.jar;." hoi4_translator.py
+              Write-Host "Found hoi_logic.jar — building with Java support."
+              pyinstaller `
+                --clean `
+                --onefile `
+                --noconsole `
+                --name "Hoi4_Translator" `
+                --hidden-import="aiohttp" `
+                --hidden-import="deep_translator" `
+                --hidden-import="deep_translator.google_trans" `
+                --hidden-import="deep_translator.mymemory_translator" `
+                --hidden-import="deep_translator.deepl_translator" `
+                --add-data "hoi_logic.jar;." `
+                hoi4_translator.py
           } else {
-              Write-Host "No hoi_logic.jar found. Packaging Python only."
-              pyinstaller --clean --onefile --noconsole --name "HOI4_Translator_PRO" hoi4_translator.py
+              Write-Host "No hoi_logic.jar — building Python only."
+              pyinstaller `
+                --clean `
+                --onefile `
+                --noconsole `
+                --name "Hoi4_Translator" `
+                --hidden-import="aiohttp" `
+                --hidden-import="deep_translator" `
+                --hidden-import="deep_translator.google_trans" `
+                --hidden-import="deep_translator.mymemory_translator" `
+                --hidden-import="deep_translator.deepl_translator" `
+                hoi4_translator.py
           }
         shell: pwsh
+
+      - name: Upload EXE as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hoi4_Translator
+          path: dist/Hoi4_Translator.exe
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/HOI4_Translator_PRO.exe
-          generate_release_notes: true # Автоматически создаст список изменений из коммитов
+          name: "Hoi4 Translator ${{ github.ref_name }}"
+          body_path: RELEASE.md
+          files: dist/Hoi4_Translator.exe
+          generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
