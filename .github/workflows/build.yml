@@ -3,7 +3,7 @@ name: Build Windows EXE
 on:
   push:
     tags:
-      - "v*" # Сработает при пуше тега, например v1.1.0
+      - "v*" # Сработает при пуше тега, например v1.3.0
   workflow_dispatch: # Позволяет запустить сборку вручную
 
 permissions:
@@ -29,14 +29,21 @@ jobs:
 
       - name: Build EXE
         run: |
-          # Сборка без иконки, одним файлом, без консоли
-          pyinstaller --clean --onefile --noconsole --name "HOI4_Pro_Translator" hoi4_translator.py
+          # Умная сборка: проверяем наличие Java-модуля
+          if (Test-Path "hoi_logic.jar") {
+              Write-Host "Found hoi_logic.jar! Packaging with Java Support."
+              pyinstaller --clean --onefile --noconsole --name "HOI4_Translator_PRO" --add-data "hoi_logic.jar;." hoi4_translator.py
+          } else {
+              Write-Host "No hoi_logic.jar found. Packaging Python only."
+              pyinstaller --clean --onefile --noconsole --name "HOI4_Translator_PRO" hoi4_translator.py
+          }
+        shell: pwsh
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/HOI4_Pro_Translator.exe
+          files: dist/HOI4_Translator_PRO.exe
           generate_release_notes: true # Автоматически создаст список изменений из коммитов
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
