@@ -557,15 +557,27 @@ class AsyncTranslator:
 
     async def translate_batch(self, texts: List[str], target_lang: str = "ru",
                                keys: Optional[List[str]] = None,
-                               file_ctx: str = "") -> List[str]:
-        tasks = [
-            self.translate_text_async(
+                               file_ctx: str = "",
+                               line_progress_cb=None) -> List[str]:
+        # line_progress_cb(done, total) — вызывается после каждой переведённой строки
+        done_count = 0
+        total = len(texts)
+        lock = asyncio.Lock()
+
+        async def translate_one(i, t):
+            nonlocal done_count
+            result = await self.translate_text_async(
                 t, target_lang,
                 _file_ctx=file_ctx,
                 _key_ctx=(keys[i] if keys else str(i))
             )
-            for i, t in enumerate(texts)
-        ]
+            if line_progress_cb:
+                async with lock:
+                    done_count += 1
+                    line_progress_cb(done_count, total)
+            return result
+
+        tasks = [translate_one(i, t) for i, t in enumerate(texts)]
         return await asyncio.gather(*tasks)
 
 # ---------------------------------------------------------------------------
@@ -592,12 +604,19 @@ def load_existing_translations(dst_path: str) -> Dict[str, str]:
 def process_file_sync(
     src_path: str,
     dst_path: str,
-    translator: AsyncTranslator,
+    translator: 'AsyncTranslator',
     log_cb,
     skip_translated: bool,
     stop_event: threading.Event,
-    loop: asyncio.AbstractEventLoop
+    loop: asyncio.AbstractEventLoop,
+    target_lang: str = "ru",
+    line_progress_cb=None,
+    preview_cb=None,
 ) -> Optional[int]:
+    """
+    preview_cb(orig_vals, trans_vals, meta, out_lines, dst_path) — если задан,
+    вызывается вместо немедленной записи файла. Запись делает сам preview_cb.
+    """
 
     os.makedirs(os.path.dirname(dst_path), exist_ok=True)
     existing = load_existing_translations(dst_path) if skip_translated else {}
@@ -620,7 +639,8 @@ def process_file_sync(
             return None
 
         if i == 0 and line.strip().startswith('l_'):
-            out_lines[i] = re.sub(r'^(\s*)l_[a-z]+:', r'\1l_russian:', line)
+            lang_tag = target_lang.replace('-', '_')
+            out_lines[i] = re.sub(r'^(\s*)l_[a-z]+:', rf'\1l_{lang_tag}:', line)
             continue
 
         m = VALUE_RE.match(line)
@@ -650,9 +670,10 @@ def process_file_sync(
     async def run_translate():
         async with translator:
             return await translator.translate_batch(
-                to_translate_val, "ru",
+                to_translate_val, target_lang,
                 keys=to_translate_keys,
-                file_ctx=rel_path
+                file_ctx=rel_path,
+                line_progress_cb=line_progress_cb,
             )
 
     try:
@@ -662,20 +683,22 @@ def process_file_sync(
         log_cb(f"  Ошибка перевода: {e}", 'error')
         return None
 
-    for line_idx, translated, (pfx, sfx) in zip(to_translate_idx, translated_vals, meta):
-        out_lines[line_idx] = f'{pfx}"{translated}"{sfx}\n'
-
-    with open(dst_path, 'w', encoding='utf-8-sig') as f:
-        f.writelines(out_lines)
+    if preview_cb:
+        # Передаём управление в предпросмотр — он сам запишет файл
+        preview_cb(to_translate_val, translated_vals, to_translate_idx, meta, out_lines, dst_path)
+    else:
+        for line_idx, translated, (pfx, sfx) in zip(to_translate_idx, translated_vals, meta):
+            out_lines[line_idx] = f'{pfx}"{translated}"{sfx}\n'
+        with open(dst_path, 'w', encoding='utf-8-sig') as f:
+            f.writelines(out_lines)
 
     if skipped:
         log_cb(f"  Пропущено (уже переведено): {skipped}", 'info')
 
-    # Логируем проблемы валидации для этого файла
     broken_in_file = [b for b in translator.validation_report.broken if b['file'] == rel_path]
     if broken_in_file:
         log_cb(f"  ⚠ Битых строк: {len(broken_in_file)}", 'warning')
-        for b in broken_in_file[:5]:  # Показываем не больше 5
+        for b in broken_in_file[:5]:
             log_cb(f"    [{b['key']}]: {', '.join(b['issues'])}", 'warning')
 
     return total
@@ -726,7 +749,7 @@ def save_settings(data: dict):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("HOI4 Localisation Translator v1.3.0)
+        self.title("Hoi4 Translator v1.3.0")
         self.minsize(820, 720)
         self.configure(bg='#1a1a1a')
 
@@ -778,7 +801,7 @@ class App(tk.Tk):
 
     def _build_ui(self):
         pad = {'padx': 15, 'pady': 5}
-        ttk.Label(self, text="HOI4 Translator", font=('Segoe UI', 18, 'bold'), foreground='#4caf50').pack(pady=10)
+        ttk.Label(self, text="Hoi4 Translator", font=('Segoe UI', 18, 'bold'), foreground='#4caf50').pack(pady=10)
 
         # Папки
         f_folders = ttk.LabelFrame(self, text=" Папки ", padding=10)
@@ -796,7 +819,7 @@ class App(tk.Tk):
         f_folders.columnconfigure(1, weight=1)
 
         # Движок
-        f_engine = ttk.LabelFrame(self, text=" Движок и API ", padding=10)
+        f_engine = ttk.LabelFrame(self, text=" Движок и языки ", padding=10)
         f_engine.pack(fill='x', **pad)
 
         row1 = ttk.Frame(f_engine); row1.pack(fill='x')
@@ -810,9 +833,33 @@ class App(tk.Tk):
         self.engine_cb.pack(side='left', padx=5)
         self.engine_cb.bind("<<ComboboxSelected>>", self._toggle_api_field)
 
+        # --- УЛУЧШЕНИЕ 3: Исходный и целевой язык ---
         ttk.Label(row1, text="С языка:").pack(side='left', padx=(15, 0))
         self.lang_var = tk.StringVar(value="en")
-        ttk.Combobox(row1, textvariable=self.lang_var, values=["en", "de", "fr", "es", "pl"], state="readonly", width=5).pack(side='left', padx=5)
+        ttk.Combobox(
+            row1, textvariable=self.lang_var,
+            values=["en", "de", "fr", "es", "pl", "pt", "it", "ja", "zh-CN", "ko"],
+            state="readonly", width=7
+        ).pack(side='left', padx=5)
+
+        ttk.Label(row1, text="→  На язык:").pack(side='left', padx=(10, 0))
+        self.target_lang_var = tk.StringVar(value="ru")
+        TARGET_LANGS = [
+            ("ru", "Русский"), ("uk", "Украинский"), ("pl", "Польский"),
+            ("de", "Немецкий"), ("fr", "Французский"), ("es", "Испанский"),
+            ("pt", "Португальский"), ("it", "Итальянский"), ("zh-CN", "Китайский"),
+            ("ja", "Японский"), ("ko", "Корейский"), ("tr", "Турецкий"),
+            ("cs", "Чешский"), ("hu", "Венгерский"), ("ro", "Румынский"),
+        ]
+        self._target_lang_map = {label: code for code, label in TARGET_LANGS}
+        self._target_lang_rev = {code: label for code, label in TARGET_LANGS}
+        self.target_lang_cb = ttk.Combobox(
+            row1, values=[label for _, label in TARGET_LANGS],
+            state="readonly", width=13
+        )
+        self.target_lang_cb.set("Русский")
+        self.target_lang_cb.pack(side='left', padx=5)
+        self.target_lang_cb.bind("<<ComboboxSelected>>", self._on_target_lang_change)
 
         # Параллельность
         ttk.Label(row1, text="Параллельность:").pack(side='left', padx=(15, 0))
@@ -839,18 +886,32 @@ class App(tk.Tk):
         # Опции
         of = ttk.Frame(self); of.pack(fill='x', **pad)
         self.skip_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(of, text="Пропускать переведённое (файл + БД)", variable=self.skip_var).pack(side='left')
+        ttk.Checkbutton(of, text="Пропускать переведённое", variable=self.skip_var).pack(side='left')
         self.open_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(of, text="Открыть папку по итогу", variable=self.open_var).pack(side='left', padx=20)
+        ttk.Checkbutton(of, text="Открыть папку по итогу", variable=self.open_var).pack(side='left', padx=15)
+        # --- УЛУЧШЕНИЕ 7: галочка предпросмотра ---
+        self.preview_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(of, text="Предпросмотр перед записью", variable=self.preview_var).pack(side='left')
 
         # Кэш инфо
         self.cache_info_var = tk.StringVar(value="")
         ttk.Label(of, textvariable=self.cache_info_var, foreground='#74c0fc').pack(side='right')
         ttk.Button(of, text="Инфо кэша", command=self._show_cache_info, width=10).pack(side='right', padx=5)
 
-        # Прогресс
-        self.progress = ttk.Progressbar(self, style='green.Horizontal.TProgressbar', mode='determinate')
-        self.progress.pack(fill='x', padx=15, pady=(10, 2))
+        # --- УЛУЧШЕНИЕ 2: двойной прогресс-бар ---
+        f_prog = ttk.Frame(self); f_prog.pack(fill='x', padx=15, pady=(10, 0))
+        ttk.Label(f_prog, text="Файлы:", foreground='#aaa', width=7).pack(side='left')
+        self.progress = ttk.Progressbar(f_prog, style='green.Horizontal.TProgressbar', mode='determinate')
+        self.progress.pack(side='left', fill='x', expand=True)
+        self.progress_file_lbl = ttk.Label(f_prog, text="0/0", foreground='#aaa', width=8)
+        self.progress_file_lbl.pack(side='left', padx=(5, 0))
+
+        f_prog2 = ttk.Frame(self); f_prog2.pack(fill='x', padx=15, pady=(3, 2))
+        ttk.Label(f_prog2, text="Строки:", foreground='#aaa', width=7).pack(side='left')
+        self.progress_lines = ttk.Progressbar(f_prog2, style='green.Horizontal.TProgressbar', mode='determinate')
+        self.progress_lines.pack(side='left', fill='x', expand=True)
+        self.progress_lines_lbl = ttk.Label(f_prog2, text="0/0", foreground='#aaa', width=8)
+        self.progress_lines_lbl.pack(side='left', padx=(5, 0))
 
         f_status = ttk.Frame(self); f_status.pack(fill='x', padx=15)
         self.status_var = tk.StringVar(value="Готов к работе")
@@ -876,6 +937,14 @@ class App(tk.Tk):
         self.stop_btn = ttk.Button(fb, text="■ СТОП", state='disabled', command=self.stop)
         self.stop_btn.pack(side='left', fill='x', expand=True, padx=4, ipady=5)
         ttk.Button(fb, text="Очистить лог", command=self.clear_log).pack(side='left', fill='x', expand=True, padx=(4, 0), ipady=5)
+
+    def _on_target_lang_change(self, event=None):
+        label = self.target_lang_cb.get()
+        code = self._target_lang_map.get(label, "ru")
+        self.target_lang_var.set(code)
+
+    def _get_target_lang(self) -> str:
+        return self.target_lang_var.get() or "ru"
 
     def _toggle_api_field(self, event=None):
         if self.engine_var.get() == "DeepL":
@@ -982,6 +1051,12 @@ class App(tk.Tk):
         if s.get('semaphore'): self.semaphore_var.set(s['semaphore'])
         if s.get('skip') is not None: self.skip_var.set(s['skip'])
         if s.get('open') is not None: self.open_var.set(s['open'])
+        if s.get('preview') is not None: self.preview_var.set(s['preview'])
+        if s.get('target_lang'):
+            code = s['target_lang']
+            self.target_lang_var.set(code)
+            label = self._target_lang_rev.get(code, "Русский")
+            self.target_lang_cb.set(label)
         self._toggle_api_field()
 
     def _on_close(self):
@@ -991,11 +1066,12 @@ class App(tk.Tk):
             'api_key': self.api_key_var.get(),
             'engine': self.engine_var.get(),
             'lang': self.lang_var.get(),
+            'target_lang': self._get_target_lang(),
             'semaphore': int(self.semaphore_var.get()),
             'skip': self.skip_var.get(),
             'open': self.open_var.get(),
+            'preview': self.preview_var.get(),
         })
-        # FIX: корректная остановка event loop при закрытии
         self._async_loop.call_soon_threadsafe(self._async_loop.stop)
         self.destroy()
 
@@ -1020,8 +1096,10 @@ class App(tk.Tk):
         save_settings({
             'src': src, 'dst': dst, 'api_key': self.api_key_var.get(),
             'engine': self.engine_var.get(), 'lang': self.lang_var.get(),
+            'target_lang': self._get_target_lang(),
             'semaphore': int(self.semaphore_var.get()),
             'skip': self.skip_var.get(), 'open': self.open_var.get(),
+            'preview': self.preview_var.get(),
         })
 
         threading.Thread(target=self.run_translation, daemon=True).start()
@@ -1029,11 +1107,12 @@ class App(tk.Tk):
     def run_translation(self):
         engine_name = self.engine_var.get()
         source_ln = self.lang_var.get()
+        target_ln = self._get_target_lang()
         key = self.api_key_var.get()
         src = self.src_var.get()
         dst = self.dst_var.get()
+        use_preview = self.preview_var.get()
 
-        # Обновляем глобальный лимит семафора из UI
         global SEMAPHORE_LIMIT
         SEMAPHORE_LIMIT = int(self.semaphore_var.get())
 
@@ -1041,21 +1120,24 @@ class App(tk.Tk):
         total_lines = 0
         errors = 0
 
-        self.log_line(f"Запуск... Движок: {engine_name}, Параллельность: {SEMAPHORE_LIMIT}", 'info')
+        self.log_line(f"Запуск... Движок: {engine_name} | {source_ln} → {target_ln} | Параллельность: {SEMAPHORE_LIMIT}", 'info')
 
         try:
             translator = AsyncTranslator(engine_name, api_key=key, source_lang=source_ln)
             files = collect_yml_files(src)
-            total = len(files)
+            total_files = len(files)
 
-            if total == 0:
+            if total_files == 0:
                 self.log_line("Файлы .yml не найдены!", 'error')
                 self.status_var.set("Нет файлов")
                 self.start_btn.config(state='normal')
                 self.stop_btn.config(state='disabled')
                 return
 
-            self.progress['maximum'] = total
+            self.progress['maximum'] = total_files
+            self.progress['value'] = 0
+            self.progress_lines['value'] = 0
+            self.progress_file_lbl.config(text=f"0/{total_files}")
 
             for i, fp in enumerate(files):
                 if self._stop_event.is_set():
@@ -1063,16 +1145,65 @@ class App(tk.Tk):
                     break
 
                 rel = os.path.relpath(fp, src)
-                self.status_var.set(f"Файл {i+1}/{total}: {os.path.basename(fp)}")
-                self.log_line(f"[{i+1}/{total}] {rel}")
+                self.status_var.set(f"Файл {i+1}/{total_files}: {os.path.basename(fp)}")
+                self.log_line(f"[{i+1}/{total_files}] {rel}")
+                self.progress_file_lbl.config(text=f"{i+1}/{total_files}")
+
+                # Сбрасываем прогресс строк для нового файла
+                self.progress_lines['value'] = 0
+                self.progress_lines['maximum'] = 1
+                self.progress_lines_lbl.config(text="0/?")
 
                 dst_path = rename_dst(fp, src, dst)
+
+                # --- Колбэк прогресса строк (улучшение 2) ---
+                def make_line_cb(total_in_file):
+                    def cb(done, total):
+                        self.progress_lines['maximum'] = total
+                        self.progress_lines['value'] = done
+                        self.progress_lines_lbl.config(text=f"{done}/{total}")
+                        self.update_idletasks()
+                    return cb
+
+                # --- Колбэк предпросмотра (улучшение 7) ---
+                preview_cb = None
+                if use_preview:
+                    def make_preview_cb(fp_=fp, dst_path_=dst_path):
+                        def cb(orig_vals, trans_vals, idxs, meta, out_lines, dst_path_arg):
+                            # Показываем окно предпросмотра (блокирующий вызов из потока)
+                            result = {'approved': False, 'translations': list(trans_vals)}
+                            done_evt = threading.Event()
+
+                            def open_preview():
+                                PreviewWindow(
+                                    self, fp_, orig_vals, trans_vals,
+                                    on_accept=lambda edited: (
+                                        result.update({'approved': True, 'translations': edited}),
+                                        done_evt.set()
+                                    ),
+                                    on_cancel=lambda: done_evt.set()
+                                )
+                            self.after(0, open_preview)
+                            done_evt.wait()
+
+                            if result['approved']:
+                                for line_idx, translated, (pfx, sfx) in zip(idxs, result['translations'], meta):
+                                    out_lines[line_idx] = f'{pfx}"{translated}"{sfx}\n'
+                                with open(dst_path_arg, 'w', encoding='utf-8-sig') as f:
+                                    f.writelines(out_lines)
+                            else:
+                                self.log_line("  — Предпросмотр отменён, файл не записан", 'warning')
+                        return cb
+                    preview_cb = make_preview_cb()
+
                 try:
-                    # FIX: передаём общий loop вместо создания нового
                     n = process_file_sync(
                         fp, dst_path, translator,
                         self.log_line, self.skip_var.get(),
-                        self._stop_event, self._async_loop
+                        self._stop_event, self._async_loop,
+                        target_lang=target_ln,
+                        line_progress_cb=make_line_cb(0),
+                        preview_cb=preview_cb,
                     )
                     if n is None:
                         break
@@ -1080,8 +1211,7 @@ class App(tk.Tk):
 
                     elapsed = time.time() - start_t
                     if elapsed > 0 and total_lines > 0:
-                        speed = total_lines / elapsed
-                        self.speed_var.set(f"{speed:.1f} строк/сек")
+                        self.speed_var.set(f"{total_lines / elapsed:.1f} строк/сек")
 
                     self.log_line(f"  ✓ строк: {n}", 'success')
                 except Exception as e:
@@ -1090,11 +1220,12 @@ class App(tk.Tk):
                     errors += 1
 
                 self.progress['value'] = i + 1
+                self.progress_file_lbl.config(text=f"{i+1}/{total_files}")
                 self.update_idletasks()
 
             elapsed = int(time.time() - start_t)
             m_, s_ = divmod(elapsed, 60)
-            summary = f"Готово! Файлов: {total} | строк: {total_lines} | {m_:02d}:{s_:02d}"
+            summary = f"Готово! Файлов: {total_files} | строк: {total_lines} | {m_:02d}:{s_:02d}"
             if errors:
                 summary += f" | ошибок: {errors}"
 
@@ -1103,11 +1234,10 @@ class App(tk.Tk):
             self.log_line("=" * 50, 'info')
             self.log_line(f"  {summary}", 'success' if not errors else 'warning')
 
-            # Итог валидации
             vr = translator.validation_report
             self.log_line(f"  {vr.summary()}", 'info' if not vr.broken else 'warning')
             if vr.broken:
-                self.log_line(f"  Битые строки записаны в лог-файл: {LOG_FILE}", 'warning')
+                self.log_line(f"  Битые строки → {LOG_FILE}", 'warning')
                 for b in vr.broken:
                     logger.warning(f"BROKEN [{b['file']}] {b['key']}: {b['issues']}")
 
@@ -1125,6 +1255,132 @@ class App(tk.Tk):
         finally:
             self.start_btn.config(state='normal')
             self.stop_btn.config(state='disabled')
+
+# ---------------------------------------------------------------------------
+# УЛУЧШЕНИЕ 7: ОКНО ПРЕДПРОСМОТРА
+# ---------------------------------------------------------------------------
+
+class PreviewWindow(tk.Toplevel):
+    """
+    Модальное окно предпросмотра перевода.
+    Показывает таблицу Оригинал | Перевод, каждую строку перевода можно отредактировать.
+    on_accept(edited_list) — вызывается с финальным списком строк при нажатии «Сохранить».
+    on_cancel() — вызывается при отмене.
+    """
+
+    def __init__(self, parent, filename: str, originals: List[str], translations: List[str],
+                 on_accept, on_cancel):
+        super().__init__(parent)
+        self.title(f"Предпросмотр — {os.path.basename(filename)}")
+        self.configure(bg='#1a1a1a')
+        self.resizable(True, True)
+        self.minsize(900, 500)
+
+        self._on_accept = on_accept
+        self._on_cancel = on_cancel
+        self._entries: List[tk.StringVar] = []
+
+        # Делаем модальным
+        self.grab_set()
+        self.focus_set()
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+
+        self._build(filename, originals, translations)
+
+        # Центрируем относительно родителя
+        self.update_idletasks()
+        pw, ph = parent.winfo_width(), parent.winfo_height()
+        px, py = parent.winfo_rootx(), parent.winfo_rooty()
+        w, h = self.winfo_width(), self.winfo_height()
+        self.geometry(f"{max(w,900)}x{max(h,550)}+{px + (pw-max(w,900))//2}+{py + (ph-max(h,550))//2}")
+
+    def _build(self, filename, originals, translations):
+        BG, BG2, FG = '#1a1a1a', '#2d2d2d', '#ffffff'
+
+        # Заголовок
+        hdr = tk.Frame(self, bg='#2d2d2d', pady=8)
+        hdr.pack(fill='x')
+        tk.Label(hdr, text=f"Предпросмотр: {os.path.basename(filename)}",
+                 bg='#2d2d2d', fg='#4caf50', font=('Segoe UI', 11, 'bold')).pack(side='left', padx=15)
+        tk.Label(hdr, text=f"{len(originals)} строк",
+                 bg='#2d2d2d', fg='#aaa', font=('Segoe UI', 10)).pack(side='right', padx=15)
+
+        # Заголовки колонок
+        col_hdr = tk.Frame(self, bg='#252525')
+        col_hdr.pack(fill='x', padx=10, pady=(8, 0))
+        tk.Label(col_hdr, text="  Оригинал", bg='#252525', fg='#74c0fc',
+                 font=('Segoe UI', 9, 'bold'), anchor='w').pack(side='left', fill='x', expand=True)
+        tk.Label(col_hdr, text="  Перевод (можно редактировать)", bg='#252525', fg='#69db7c',
+                 font=('Segoe UI', 9, 'bold'), anchor='w').pack(side='left', fill='x', expand=True)
+
+        # Scrollable таблица
+        container = tk.Frame(self, bg=BG)
+        container.pack(fill='both', expand=True, padx=10, pady=4)
+
+        canvas = tk.Canvas(container, bg=BG, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient='vertical', command=canvas.yview)
+        self._scroll_frame = tk.Frame(canvas, bg=BG)
+
+        self._scroll_frame.bind(
+            '<Configure>',
+            lambda e: canvas.configure(scrollregion=canvas.bbox('all'))
+        )
+        canvas.create_window((0, 0), window=self._scroll_frame, anchor='nw')
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side='right', fill='y')
+        canvas.pack(side='left', fill='both', expand=True)
+
+        # Привязка колёсика мыши
+        canvas.bind('<Enter>', lambda e: canvas.bind_all('<MouseWheel>',
+            lambda ev: canvas.yview_scroll(-1*(ev.delta//120), 'units')))
+        canvas.bind('<Leave>', lambda e: canvas.unbind_all('<MouseWheel>'))
+
+        # Строки таблицы
+        for i, (orig, trans) in enumerate(zip(originals, translations)):
+            row_bg = BG if i % 2 == 0 else '#202020'
+            row = tk.Frame(self._scroll_frame, bg=row_bg)
+            row.pack(fill='x', pady=1)
+
+            # Оригинал (только для чтения)
+            orig_lbl = tk.Text(row, bg=row_bg, fg='#aaa', font=('Consolas', 9),
+                               height=1, relief='flat', wrap='none', bd=0,
+                               cursor='arrow', state='normal')
+            orig_lbl.insert('1.0', orig[:120] + ('…' if len(orig) > 120 else ''))
+            orig_lbl.config(state='disabled')
+            orig_lbl.pack(side='left', fill='x', expand=True, padx=(4, 2), pady=2)
+
+            # Перевод (редактируемый)
+            var = tk.StringVar(value=trans)
+            self._entries.append(var)
+            entry = ttk.Entry(row, textvariable=var, font=('Consolas', 9))
+            entry.pack(side='left', fill='x', expand=True, padx=(2, 4), pady=2)
+
+        # Подсказка
+        tk.Label(self, text="💡 Отредактируй любую строку перевода, затем нажми «Сохранить»",
+                 bg=BG, fg='#555', font=('Segoe UI', 9)).pack(pady=(0, 4))
+
+        # Кнопки
+        btn_frame = tk.Frame(self, bg='#2d2d2d', pady=8)
+        btn_frame.pack(fill='x')
+
+        style = ttk.Style()
+        ttk.Button(btn_frame, text="✔ Сохранить и записать файл",
+                   command=self._accept).pack(side='left', padx=15, ipadx=10, ipady=4)
+        ttk.Button(btn_frame, text="✘ Отмена (не записывать)",
+                   command=self._cancel).pack(side='left', ipadx=10, ipady=4)
+        tk.Label(btn_frame, text=f"Файл: {os.path.basename(filename)}",
+                 bg='#2d2d2d', fg='#555', font=('Segoe UI', 9)).pack(side='right', padx=15)
+
+    def _accept(self):
+        edited = [var.get() for var in self._entries]
+        self.destroy()
+        self._on_accept(edited)
+
+    def _cancel(self):
+        self.destroy()
+        self._on_cancel()
+
 
 # ---------------------------------------------------------------------------
 # ТОЧКА ВХОДА
