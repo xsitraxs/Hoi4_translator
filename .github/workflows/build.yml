@@ -3,19 +3,25 @@ name: Build Windows EXE
 on:
   push:
     tags:
-      - "v*"         # Срабатывает при пуше тега, например v1.3.0
-  workflow_dispatch:  # Можно запустить вручную из вкладки Actions
+      - "v*"
+  workflow_dispatch:
 
 permissions:
-  contents: write     # Нужно для создания Release и загрузки файлов
+  contents: write
 
 jobs:
   build:
     runs-on: windows-latest
-
+    
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+
+      - name: Setup Java (for JPype)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -27,35 +33,51 @@ jobs:
           python -m pip install --upgrade pip
           pip install deep-translator aiohttp jpype1 pyinstaller
 
+      - name: Build Java JAR
+        run: |
+          if (Test-Path "java/com/hoi4/translator/HoI4Translator.java") {
+            Write-Host "Compiling Java sources..."
+            javac -d java java/com/hoi4/translator/HoI4Translator.java
+            cd java
+            jar cf ../hoi4_translator.jar com/
+            cd ..
+            Write-Host "✅ JAR created: hoi4_translator.jar"
+          } else {
+            Write-Host "⚠️ No Java sources found — building without Java support"
+          }
+        shell: pwsh
+
       - name: Build EXE
         run: |
-          if (Test-Path "hoi_logic.jar") {
-              Write-Host "Found hoi_logic.jar — building with Java support."
-              pyinstaller `
-                --clean `
-                --onefile `
-                --noconsole `
-                --name "Hoi4_Translator" `
-                --collect-all="deep_translator" `
-                --hidden-import="aiohttp" `
-                --hidden-import="aiohttp.connector" `
-                --hidden-import="aiohttp.client" `
-                --hidden-import="sqlite3" `
-                --add-data "hoi_logic.jar;." `
-                hoi4_translator.py
+          if (Test-Path "hoi4_translator.jar") {
+            Write-Host "Found hoi4_translator.jar — building with Java support."
+            pyinstaller `
+              --clean `
+              --onefile `
+              --noconsole `
+              --name "Hoi4_Translator" `
+              --collect-all="deep_translator" `
+              --hidden-import="aiohttp" `
+              --hidden-import="aiohttp.connector" `
+              --hidden-import="aiohttp.client" `
+              --hidden-import="sqlite3" `
+              --hidden-import="jpype" `
+              --hidden-import="jpype.imports" `
+              --add-data "hoi4_translator.jar;." `
+              hoi4_translator.py
           } else {
-              Write-Host "No hoi_logic.jar — building Python only."
-              pyinstaller `
-                --clean `
-                --onefile `
-                --noconsole `
-                --name "Hoi4_Translator" `
-                --collect-all="deep_translator" `
-                --hidden-import="aiohttp" `
-                --hidden-import="aiohttp.connector" `
-                --hidden-import="aiohttp.client" `
-                --hidden-import="sqlite3" `
-                hoi4_translator.py
+            Write-Host "No JAR found — building Python only."
+            pyinstaller `
+              --clean `
+              --onefile `
+              --noconsole `
+              --name "Hoi4_Translator" `
+              --collect-all="deep_translator" `
+              --hidden-import="aiohttp" `
+              --hidden-import="aiohttp.connector" `
+              --hidden-import="aiohttp.client" `
+              --hidden-import="sqlite3" `
+              hoi4_translator.py
           }
         shell: pwsh
 
@@ -70,7 +92,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: "Hoi4 Translator ${{ github.ref_name }}"
-          body_path: RELEASE.md
+          body: |
+            ## Что нового:
+            - Автоматическая сборка с Java support
+            - Встроенный Google Translate через Java
+            - Поддержка всех движков (Google, DeepL, MyMemory)
+            
+            ## Установка:
+            1. Скачай Hoi4_Translator.exe
+            2. Запусти (требуется Java 11+ только для JavaSim движка)
           files: dist/Hoi4_Translator.exe
           generate_release_notes: false
         env:
