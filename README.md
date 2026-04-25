@@ -40,15 +40,12 @@
 
 ### Зависимости
 
-```
-pip install deep-translator aiohttp
-```
+Все зависимости в requirements
 
 | Пакет | Зачем | Обязателен |
 |---|---|---|
 | `deep-translator` | Движки Google, DeepL, MyMemory | **Да** |
 | `aiohttp` | Асинхронные запросы (x3–5 скорость) | Рекомендуется |
-| `jpype1` | Java-интеграция (экспериментально) | Нет |
 
 ---
 
