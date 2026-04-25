@@ -7,6 +7,7 @@ import os
 import re
 import time
 import json
+import sys
 import sqlite3
 import logging
 from datetime import datetime
@@ -792,7 +793,7 @@ def save_settings(data: dict):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Hoi4 Translator v1.3.0")
+        self.title("Hoi4 Translator v1.3.5")
         self.minsize(820, 720)
         self.configure(bg='#1a1a1a')
 
@@ -1179,7 +1180,22 @@ class App(tk.Tk):
         self.log_line(f"Запуск... Движок: {engine_name} | {source_ln} → {target_ln} | Параллельность: {SEMAPHORE_LIMIT}", 'info')
 
         try:
-            jar_path = self.java_jar_var.get().strip() or None
+            # --- Умный поиск JAR (для .exe и скрипта) ---
+            if hasattr(sys, '_MEIPASS'):
+                # Если запущен как .exe
+                base_dir = sys._MEIPASS
+            else:
+                # Если запущен как скрипт
+                base_dir = os.path.dirname(os.path.abspath(__file__))
+            
+            bundled_jar = os.path.join(base_dir, "hoi4_translator.jar")
+            
+            # Приоритет: Путь из GUI > Встроенный JAR > None
+            jar_path = self.java_jar_var.get().strip()
+            if not jar_path and os.path.exists(bundled_jar):
+                jar_path = bundled_jar
+            else:
+                jar_path = None
             translator = AsyncTranslator(engine_name, api_key=key, source_lang=source_ln, java_jar_path=jar_path)
             
             # Инициализируем aiohttp сессию и семафоры ОДИН раз для всех файлов
