@@ -61,7 +61,7 @@ pip install deep-translator aiohttp
 ```bash
 git clone https://github.com/xsitraxs/hoi4-translator
 cd hoi4-translator
-pip install deep-translator aiohttp
+pip install requirements
 python hoi4_translator.py
 ```
 
