@@ -92,15 +92,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: "Hoi4 Translator ${{ github.ref_name }}"
-          body: |
-            ## Что нового:
-            - Автоматическая сборка с Java support
-            - Встроенный Google Translate через Java
-            - Поддержка всех движков (Google, DeepL, MyMemory)
-            
-            ## Установка:
-            1. Скачай Hoi4_Translator.exe
-            2. Запусти (требуется Java 11+ только для JavaSim движка)
           files: dist/Hoi4_Translator.exe
           generate_release_notes: false
         env:
