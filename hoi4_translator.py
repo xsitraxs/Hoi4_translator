@@ -1,3 +1,4 @@
+import hashlib
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 import threading
@@ -8,10 +9,10 @@ import time
 import json
 import sqlite3
 import logging
-import hashlib
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
+from jpype.types import *
 
 # Попытка импорта асинхронных библиотек для ускорения
 try:
@@ -258,36 +259,79 @@ class ValidationReport:
 # ---------------------------------------------------------------------------
 # JAVA ИНТЕГРАЦИЯ
 # ---------------------------------------------------------------------------
-
 class JavaTranslatorService:
-    """
-    Класс для взаимодействия с Java-сервисом перевода.
-    В реальном проекте здесь будет инициализация JVM и вызов Java-методов.
-    """
-    def __init__(self):
-        self.java_available = JAVA_OK
+    def __init__(self, jar_path: Optional[str] = None):
+        self.java_available = JAVA_OK and jar_path is not None and os.path.exists(jar_path)
+        self.jar_path = jar_path
+        self._jvm_started = False
+        
         if self.java_available:
-            logger.info("Java integration module loaded (JPype available).")
+            self._start_jvm()
         else:
-            logger.warning("JPype not installed. Java features disabled.")
+            if not JAVA_OK: logger.warning("JPype не установлен. pip install jpype1")
+            elif not jar_path: logger.info("Путь к Java JAR не указан.")
+            else: logger.error(f"Файл JAR не найден: {jar_path}")
+
+    def _start_jvm(self):
+        """Безопасный запуск JVM с приоритетом JAVA_HOME"""
+        if jpype.isJVMStarted():
+            self._jvm_started = True
+            return
+
+        try:
+            jvm_path = None
+            
+            # 1. Приоритет: явный путь через переменную окружения
+            jvm_path = os.environ.get('JPYPE_JVM_PATH')
+            
+            # 2. Приоритет: сборка из JAVA_HOME
+            if not jvm_path:
+                java_home = os.environ.get('JAVA_HOME')
+                if java_home:
+                    for sub in ('bin\\server', 'bin\\client', 'jre\\bin\\server'):
+                        candidate = os.path.join(java_home, sub, 'jvm.dll')
+                        if os.path.exists(candidate):
+                            jvm_path = candidate
+                            break
+            
+            # 3. Фолбэк: стандартный поиск JPype
+            if not jvm_path:
+                jvm_path = jpype.getDefaultJVMPath()
+                if os.path.isdir(jvm_path):
+                    jvm_path = os.path.join(jvm_path, 'jvm.dll')
+
+            if not os.path.exists(jvm_path):
+                raise FileNotFoundError(f"jvm.dll не найден: {jvm_path}")
+
+            logger.info(f" Запуск JVM: {jvm_path}")
+            jpype.startJVM(jvm_path, classpath=[self.jar_path], convertStrings=False)
+            self._jvm_started = True
+            logger.info("✅ JVM успешно запущен.")
+        except Exception as e:
+            logger.error(f"❌ Ошибка запуска JVM: {e}")
+            self.java_available = False
 
     def translate_batch_java(self, texts: List[str], target_lang: str = "ru") -> List[str]:
-        if not self.java_available:
-            raise NotImplementedError("Java runtime not available.")
-        logger.info(f"Calling Java service for {len(texts)} items...")
-        time.sleep(0.1)
-        return [f"[JAVA_TRANSLATED]{t}" for t in texts]
+        if not self.java_available or not self._jvm_started:
+            return list(texts)  # фолбэк
+
+        try:
+            # Пакет и класс должны точно совпадать с тем, что в .java файле
+            JTranslator = jpype.JClass("com.hoi4.translator.HoI4Translator")
+            translator = JTranslator()
+            # Вызываем метод для каждой строки
+            return [str(translator.translate(t, target_lang)) for t in texts]
+        except Exception as e:
+            logger.error(f"Java translation error: {e}")
+            return list(texts)
 
     def shutdown(self):
-        # FIX: проверяем java_available ДО обращения к jpype
-        if self.java_available and JAVA_OK:
+        if self._jvm_started and jpype.isJVMStarted():
             try:
-                if jpype.isJVMStarted():
-                    jpype.shutdownJVM()
-                    logger.info("JVM shut down.")
-            except Exception as e:
-                logger.warning(f"JVM shutdown error: {e}")
-
+                jpype.shutdownJVM()
+                logger.info("JVM shut down.")
+            except Exception:
+                pass
 # ---------------------------------------------------------------------------
 # БАЗА ДАННЫХ (КЭШИРОВАНИЕ)
 # FIX: единое персистентное соединение вместо connect/close на каждый запрос
@@ -377,15 +421,15 @@ def restore_placeholders(text: str, tokens: List[str]) -> str:
     return re.sub(r'<<PH(\d+)>>', replacer, text)
 
 class AsyncTranslator:
-    def __init__(self, engine: str, api_key: Optional[str] = None, source_lang: str = "en"):
+    def __init__(self, engine: str, api_key: Optional[str] = None, source_lang: str = "en", java_jar_path: Optional[str] = None):
         self.engine = engine
         self.api_key = api_key
         self.source_lang = source_lang
         self.session: Optional[aiohttp.ClientSession] = None
         self.cache = TranslationCache(DB_FILE)
-        self.java_service = JavaTranslatorService()
+        # 👇 Передаём путь в сервис
+        self.java_service = JavaTranslatorService(jar_path=java_jar_path)
         self._semaphore: Optional[asyncio.Semaphore] = None
-        # Статистика валидации за сессию
         self.validation_report = ValidationReport()
 
     async def __aenter__(self):
@@ -753,6 +797,7 @@ class App(tk.Tk):
         self.configure(bg='#1a1a1a')
 
         self._stop_event = threading.Event()
+        self.java_jar_var = tk.StringVar(value="")  # 👈 Путь к JAR
 
         # FIX: один async event loop на весь сеанс, запускается в фоновом потоке
         self._async_loop = asyncio.new_event_loop()
@@ -797,6 +842,12 @@ class App(tk.Tk):
         style.configure('TCheckbutton', background=BG, foreground=FG)
         style.map('TCheckbutton', background=[('active', BG)], foreground=[('active', FG)])
         style.configure('TScale', background=BG, troughcolor=BG2)
+
+    def browse_jar(self):
+        f = filedialog.askopenfilename(title="Выберите hoi4_translator.jar", filetypes=[("JAR files", "*.jar")])
+        if f: 
+            self.java_jar_var.set(f)
+            self.log_line(f"📦 Выбран JAR: {os.path.basename(f)}", 'info')
 
     def _build_ui(self):
         pad = {'padx': 15, 'pady': 5}
@@ -869,6 +920,10 @@ class App(tk.Tk):
             row1, from_=1, to=50, variable=self.semaphore_var,
             command=lambda v: self.sem_lbl.config(text=str(int(float(v))))
         ).pack(side='right', padx=5)
+        row_jar = ttk.Frame(f_engine); row_jar.pack(fill='x', pady=(10,0))
+        ttk.Label(row_jar, text="Java JAR: ").pack(side='left')
+        ttk.Entry(row_jar, textvariable=self.java_jar_var, width=45).pack(side='left', padx=5)
+        ttk.Button(row_jar, text="Обзор", command=self.browse_jar, width=8).pack(side='left')
 
         row2 = ttk.Frame(f_engine); row2.pack(fill='x', pady=(10, 0))
         self.api_lbl = ttk.Label(row2, text="DeepL API Key:", foreground='#555')
@@ -1051,6 +1106,7 @@ class App(tk.Tk):
         if s.get('skip') is not None: self.skip_var.set(s['skip'])
         if s.get('open') is not None: self.open_var.set(s['open'])
         if s.get('preview') is not None: self.preview_var.set(s['preview'])
+        if s.get('java_jar'): self.java_jar_var.set(s['java_jar'])
         if s.get('target_lang'):
             code = s['target_lang']
             self.target_lang_var.set(code)
@@ -1070,6 +1126,7 @@ class App(tk.Tk):
             'skip': self.skip_var.get(),
             'open': self.open_var.get(),
             'preview': self.preview_var.get(),
+            'java_jar': self.java_jar_var.get(),  # ➕
         })
         self._async_loop.call_soon_threadsafe(self._async_loop.stop)
         self.destroy()
@@ -1122,7 +1179,8 @@ class App(tk.Tk):
         self.log_line(f"Запуск... Движок: {engine_name} | {source_ln} → {target_ln} | Параллельность: {SEMAPHORE_LIMIT}", 'info')
 
         try:
-            translator = AsyncTranslator(engine_name, api_key=key, source_lang=source_ln)
+            jar_path = self.java_jar_var.get().strip() or None
+            translator = AsyncTranslator(engine_name, api_key=key, source_lang=source_ln, java_jar_path=jar_path)
             
             # Инициализируем aiohttp сессию и семафоры ОДИН раз для всех файлов
             asyncio.run_coroutine_threadsafe(
