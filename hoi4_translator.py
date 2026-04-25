@@ -726,7 +726,7 @@ def save_settings(data: dict):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("HOI4 Localisation Translator PRO v2.2")
+        self.title("HOI4 Localisation Translator v1.3.0)
         self.minsize(820, 720)
         self.configure(bg='#1a1a1a')
 
@@ -778,7 +778,7 @@ class App(tk.Tk):
 
     def _build_ui(self):
         pad = {'padx': 15, 'pady': 5}
-        ttk.Label(self, text="HOI4 Translator PRO", font=('Segoe UI', 18, 'bold'), foreground='#4caf50').pack(pady=10)
+        ttk.Label(self, text="HOI4 Translator", font=('Segoe UI', 18, 'bold'), foreground='#4caf50').pack(pady=10)
 
         # Папки
         f_folders = ttk.LabelFrame(self, text=" Папки ", padding=10)
