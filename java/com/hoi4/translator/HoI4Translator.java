@@ -15,6 +15,20 @@ public class HoI4Translator {
     // Маркеры, которые Python подставляет вместо $ключ$, [ключ], §X и т.д.
     private static final Pattern PH_PATTERN = Pattern.compile("<<PH\\d+>>");
 
+    // FIX #10: HttpClient создаётся один раз, а не на каждый вызов
+    private final java.net.http.HttpClient httpClient = java.net.http.HttpClient.newBuilder()
+            .connectTimeout(java.time.Duration.ofSeconds(8))
+            .followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
+            .build();
+
+    // FIX #9: надёжный regex для первого сегмента ответа Google вместо хрупкого indexOf+split
+    // Ответ: [[["Перевод","Оригинал",...],...],...] — берём только первое поле первого элемента
+    private static final Pattern GOOGLE_SEG_RE = Pattern.compile(
+            "\\[\"((?:[^\"\\\\]|\\\\.)*)\",\"(?:[^\"\\\\]|\\\\.)*\"");
+
+    // FIX #11: лимит длины текста для одного запроса (символов в исходном тексте)
+    private static final int MAX_QUERY_CHARS = 400;
+
     /**
      * Основной метод, вызываемый из Python.
      * @param text строка с защищёнными плейсхолдерами <<PH0>>, <<PH1>>...
@@ -64,16 +78,16 @@ public class HoI4Translator {
         // ==========================================
         // 🔵 GOOGLE TRANSLATE (неофициальный бесплатный эндпоинт)
         // ==========================================
+
+        // FIX #11: обрезаем слишком длинные строки — длинный URL вернёт ошибку
+        String query = clean.length() > MAX_QUERY_CHARS ? clean.substring(0, MAX_QUERY_CHARS) : clean;
+
         try {
-            String encoded = java.net.URLEncoder.encode(clean, java.nio.charset.StandardCharsets.UTF_8);
+            String encoded = java.net.URLEncoder.encode(query, java.nio.charset.StandardCharsets.UTF_8);
             String url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=" +
                     targetLang + "&dt=t&q=" + encoded;
 
-            java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
-                    .connectTimeout(java.time.Duration.ofSeconds(8))
-                    .followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
-                    .build();
-
+            // FIX #10: используем общий httpClient, а не создаём новый на каждый вызов
             java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
                     .uri(java.net.URI.create(url))
                     .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
@@ -81,7 +95,7 @@ public class HoI4Translator {
                     .GET()
                     .build();
 
-            java.net.http.HttpResponse<String> resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString());
+            java.net.http.HttpResponse<String> resp = httpClient.send(req, java.net.http.HttpResponse.BodyHandlers.ofString());
 
             if (resp.statusCode() == 200) {
                 String translated = parseGoogleResponse(resp.body());
@@ -97,28 +111,19 @@ public class HoI4Translator {
         return text;
     }
 
-    /** Парсит ответ неофициального Google API без внешних библиотек */
+    /** FIX #9: Парсит ответ Google API через regex — надёжнее чем indexOf+split.
+     *  Собирает все сегменты перевода из data[0][*][0]. */
     private String parseGoogleResponse(String json) {
         StringBuilder sb = new StringBuilder();
-        // Формат ответа: [[["Перевод","Оригинал",null,null,1]],null,"en"]
-        int start = json.indexOf("[[[\"");
-        if (start == -1) return "";
-
-        int end = json.indexOf("]]],null", start);
-        if (end == -1) end = json.length();
-
-        String block = json.substring(start + 3, end);
-        // Разбиваем на сегменты: "],[",
-        String[] parts = block.split("\\],\\[");
-        for (String part : parts) {
-            int q1 = part.indexOf('\"');
-            int q2 = part.indexOf('\"', q1 + 1);
-            if (q1 >= 0 && q2 > q1) {
-                String seg = part.substring(q1 + 1, q2);
-                // Восстанавливаем экранированные переносы строк
-                seg = seg.replace("\\n", "\n").replace("\\t", "\t").replace("\\\"", "\"");
-                sb.append(seg);
-            }
+        Matcher m = GOOGLE_SEG_RE.matcher(json);
+        while (m.find()) {
+            String seg = m.group(1);
+            // Восстанавливаем JSON-экранирование
+            seg = seg.replace("\\n", "\n")
+                     .replace("\\t", "\t")
+                     .replace("\\\"", "\"")
+                     .replace("\\\\", "\\");
+            sb.append(seg);
         }
         return sb.toString();
     }
