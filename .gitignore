@@ -1,4 +1,3 @@
-```
 # Python
 __pycache__/
 *.pyc
@@ -35,6 +34,10 @@ build/
 .eggs/
 .installed.cfg
 *.egg
+*.spec
+
+# PyInstaller
+*.manifest
 
 # Virtual Environment
 pip-log.txt
@@ -49,4 +52,8 @@ pip-delete-this-directory.txt
 ehthumbs.db
 Thumbs.db
 Icon?
-```
+
+# Hoi4 Translator — рабочие файлы (не нужны в репо)
+translation_cache.db
+hoi4_translator.log
+*.log
