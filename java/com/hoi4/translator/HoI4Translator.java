@@ -120,9 +120,9 @@ public class HoI4Translator {
             String seg = m.group(1);
             // Восстанавливаем JSON-экранирование
             seg = seg.replace("\\n", "\n")
-                     .replace("\\t", "\t")
-                     .replace("\\\"", "\"")
-                     .replace("\\\\", "\\");
+                    .replace("\\t", "\t")
+                    .replace("\\\"", "\"")
+                    .replace("\\\\", "\\");
             sb.append(seg);
         }
         return sb.toString();
