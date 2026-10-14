@@ -1,4 +1,5 @@
 aiohttp>=3.8.0
 deep-translator>=1.11.0
+deepl>=1.32.0
 jpype1>=1.4.0
 keyring>=24.0
