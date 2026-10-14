@@ -13,7 +13,8 @@ import logging
 import tempfile
 import getpass
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from enum import Enum
+from typing import List, Optional, Dict, Any, Tuple, Union
 import queue
 
 # Попытка импорта асинхронных библиотек для ускорения
@@ -88,6 +89,9 @@ SETTINGS_FILE = os.path.join(APP_DATA_DIR, "settings.json")
 LEGACY_SETTINGS_FILE = os.path.join(
     os.path.expanduser("~"), ".hoi4_translator_settings.json"
 )
+# Bump whenever translation/post-processing semantics change so stale cache
+# entries cannot bypass newer validation or typography rules.
+CACHE_FORMAT_VERSION = 2
 
 try:
     import keyring
@@ -212,64 +216,79 @@ class TranslationFailed(Exception):
     """Raised when every configured translation engine fails for a string."""
 
 
+class FileProcessStatus(Enum):
+    """Non-error file-processing outcomes that are not successful writes."""
+
+    PREVIEW_CANCELLED = "preview_cancelled"
+
+
+FileProcessResult = Union[int, FileProcessStatus, None]
+
+
 # ---------------------------------------------------------------------------
 # 5. ПОСТОБРАБОТКА ПЕРЕВОДА
 # ---------------------------------------------------------------------------
 
 class PostProcessor:
-    """
-    Исправляет типичные косяки машинного перевода, не меняя игровой синтаксис.
-    Маркеры локализации временно экранируются на время типографических правок.
-    """
+    """Apply conservative, target-language-aware typography fixes."""
 
     _DOUBLE_SPACE_RE = re.compile(r'  +')
-    _SPACE_BEFORE_PUNCT_RE = re.compile(r' ([,;:!?»])')
-    _SPACE_AFTER_OPEN_QUOTE_RE = re.compile(r'«\s+')
-    _SPACE_BEFORE_CLOSE_QUOTE_RE = re.compile(r'\s+»')
-    _ENG_QUOTE_RE = re.compile(r'"([^"]+)"')
+    _SPACE_BEFORE_PUNCT_RE = re.compile(r' +([,;:!?])')
+    _FRENCH_SPACE_BEFORE_COMMA_RE = re.compile(r' +,')
+    _FRENCH_SPACE_BEFORE_PUNCT_RE = re.compile(r' +([;:!?])')
+    _QUOTED_PHRASE_RE = re.compile(r'"([^"\\]+)"')
     # Only trim horizontal spaces around the literal HOI4 escape; \s would
     # also consume physical CR/LF characters and hide a malformed translation.
     _SPACE_AROUND_NEWLINE_RE = re.compile(r'[ \t]*\\n[ \t]*')
-    # §W is a colour code, §! ends formatting. Numeric codes are gradients.
-    _COLOR_CODE_RE = re.compile(r'(§[A-Za-z0-9])\s*([а-яёА-ЯЁa-zA-Z])')
     _LEFTOVER_PH_RE = re.compile(r'<<PH\d+>>')
+    _QUOTE_STYLES = {
+        "en": ("“", "”", ""), "fr": ("«", "»", "\u202f"),
+        "de": ("„", "“", ""), "es": ("«", "»", ""),
+        "pt": ("“", "”", ""), "pl": ("„", "”", ""),
+        "ru": ("«", "»", ""), "ja": ("「", "」", ""),
+        "zh-cn": ("「", "」", ""), "ko": ("“", "”", ""),
+    }
 
     @classmethod
-    def process(cls, text: str, original: str) -> str:
-        """Apply typography fixes outside HOI4/YAML tokens only."""
+    def process(cls, text: str, original: str, target_lang: str = "ru") -> str:
+        """Normalize basic punctuation without editing HOI4 tokens or casing."""
         if not text:
             return text
 
         # HOI4 newline escapes are literal two-character sequences in a value.
         text = cls._SPACE_AROUND_NEWLINE_RE.sub(r'\\n', text)
 
-        # Keep every game token opaque to punctuation and quote cleanup. Leave
-        # colour-start codes visible so the legacy spacing/capitalization fix
-        # can still run; §! and all non-colour tokens remain protected.
         tokens = []
         marker_prefix = "\uE000HOI4PP_"
         while marker_prefix in text:
             marker_prefix += "_"
 
         def protect_token(match):
-            token = match.group(0)
-            if re.fullmatch(r'§[A-Za-z0-9]', token):
-                return token
             index = len(tokens)
-            tokens.append(token)
+            tokens.append(match.group(0))
             return f"{marker_prefix}{index}\uE001"
 
         protected = PLACEHOLDER_RE.sub(protect_token, text)
-        protected = cls._ENG_QUOTE_RE.sub(r'«\1»', protected)
+        language = target_lang.replace("_", "-").casefold()
+        quote_open, quote_close, quote_space = cls._QUOTE_STYLES.get(
+            language, ("“", "”", "")
+        )
+        protected = cls._QUOTED_PHRASE_RE.sub(
+            lambda match: (
+                f"{quote_open}{quote_space}{match.group(1)}"
+                f"{quote_space}{quote_close}"
+            ),
+            protected,
+        )
         protected = cls._DOUBLE_SPACE_RE.sub(' ', protected)
 
-        def fix_color(match):
-            return match.group(1) + match.group(2).upper()
-
-        protected = cls._COLOR_CODE_RE.sub(fix_color, protected)
-        protected = cls._SPACE_BEFORE_PUNCT_RE.sub(r'\1', protected)
-        protected = cls._SPACE_AFTER_OPEN_QUOTE_RE.sub('«', protected)
-        protected = cls._SPACE_BEFORE_CLOSE_QUOTE_RE.sub('»', protected)
+        if language == "fr":
+            protected = cls._FRENCH_SPACE_BEFORE_COMMA_RE.sub(',', protected)
+            protected = cls._FRENCH_SPACE_BEFORE_PUNCT_RE.sub(
+                lambda match: "\u202f" + match.group(1), protected
+            )
+        else:
+            protected = cls._SPACE_BEFORE_PUNCT_RE.sub(r'\1', protected)
         protected = protected.strip(' ')
 
         marker_re = re.compile(re.escape(marker_prefix) + r'(\d+)\uE001')
@@ -296,6 +315,24 @@ class PlaceholderValidator:
         # Escapes are protected before translation, so they must match exactly.
         return PLACEHOLDER_RE.findall(text)
 
+    _COLOR_MARKER_RE = re.compile(r'§[A-Za-z0-9!]')
+    _INVALID_SECTION_RE = re.compile(r'§(?![A-Za-z0-9!])')
+
+    @classmethod
+    def _color_format_issues(cls, text: str, label: str) -> List[str]:
+        issues = []
+        if cls._INVALID_SECTION_RE.search(text):
+            issues.append(f"{label}: некорректный знак §")
+        active_color = False
+        for marker in cls._COLOR_MARKER_RE.findall(text):
+            if marker == "§!":
+                active_color = False
+            else:
+                active_color = True
+        if active_color:
+            issues.append(f"{label}: цветовой маркер не закрыт через §!")
+        return issues
+
     @classmethod
     def validate(cls, original: str, translated: str) -> List[str]:
         """
@@ -303,6 +340,15 @@ class PlaceholderValidator:
         Пустой список = перевод валиден.
         """
         issues = []
+        issues.extend(cls._color_format_issues(original, "исходник"))
+        issues.extend(cls._color_format_issues(translated, "перевод"))
+        original_colors = cls._COLOR_MARKER_RE.findall(original)
+        translated_colors = cls._COLOR_MARKER_RE.findall(translated)
+        if (
+            original_colors != translated_colors
+            and sorted(original_colors) == sorted(translated_colors)
+        ):
+            issues.append("изменён порядок цветовых маркеров §")
 
         orig_phs = cls.extract_placeholders(original)
         trans_phs = cls.extract_placeholders(translated)
@@ -494,8 +540,12 @@ class TranslationCache:
             self._conn.commit()
 
     def _get_hash(self, text: str, src: str, tgt: str, engine: str) -> str:
-        key_str = f"{text}|{src}|{tgt}|{engine}"
-        return hashlib.md5(key_str.encode('utf-8')).hexdigest()
+        key_data = json.dumps(
+            [CACHE_FORMAT_VERSION, text, src, tgt, engine],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(key_data.encode("utf-8")).hexdigest()
 
     def get(self, text: str, src: str, tgt: str, engine: str) -> Optional[str]:
         h = self._get_hash(text, src, tgt, engine)
@@ -652,7 +702,7 @@ class AsyncTranslator:
             logger.warning(f"Битый перевод [{_key_ctx}]: {issues}")
 
         # --- 5. ПОСТОБРАБОТКА ---
-        final_text = PostProcessor.process(final_text, text)
+        final_text = PostProcessor.process(final_text, text, target_lang)
         final_issues = validate_preview_translations([text], [final_text])
         issues = final_issues
         if final_issues:
@@ -986,7 +1036,7 @@ def process_file_sync(
     target_lang: str = "ru",
     line_progress_cb=None,
     preview_cb=None,
-) -> Optional[int]:
+) -> FileProcessResult:
     target_name = get_hoi4_language_name(target_lang)
     required_suffix = f"_l_{target_name}.yml"
     if not os.path.basename(dst_path).casefold().endswith(required_suffix.casefold()):
@@ -1021,6 +1071,7 @@ def process_file_sync(
     meta = []
     skipped = 0
     malformed_lines = []
+    key_line_numbers: Dict[str, List[int]] = {}
 
     for i, line in enumerate(lines):
         if stop_event.is_set():
@@ -1042,6 +1093,7 @@ def process_file_sync(
             malformed_lines.append(i + 1)
             continue
         key = prefix.strip()
+        key_line_numbers.setdefault(key, []).append(i + 1)
 
         existing_value = existing.get(key) if skip_translated else None
         if existing_value is not None:
@@ -1068,6 +1120,23 @@ def process_file_sync(
         log_cb(
             f"  Файл пропущен: строки {rows}{more} не соответствуют формату "
             'локализации (ключ:"значение"); проверьте ключи, кавычки и версию',
+            'error',
+        )
+        return None
+
+    duplicate_keys = {
+        key: row_numbers for key, row_numbers in key_line_numbers.items()
+        if len(row_numbers) > 1
+    }
+    if duplicate_keys:
+        details = "; ".join(
+            f"{key} (строки {', '.join(map(str, row_numbers))})"
+            for key, row_numbers in list(duplicate_keys.items())[:10]
+        )
+        remaining = len(duplicate_keys) - min(len(duplicate_keys), 10)
+        more = f"; и ещё {remaining} дубликатов" if remaining else ""
+        log_cb(
+            f"  Файл не записан: повторяющиеся localization keys: {details}{more}",
             'error',
         )
         return None
@@ -1118,7 +1187,20 @@ def process_file_sync(
         return None
 
     if preview_cb:
-        preview_cb(to_translate_val, translated_vals, to_translate_idx, meta, out_lines, dst_path)
+        preview_result = preview_cb(
+            to_translate_val, translated_vals, to_translate_idx, meta, out_lines, dst_path
+        )
+        if preview_result is False:
+            if stop_event.is_set():
+                return None
+            log_cb("  Предпросмотр отменён: файл не записан", 'warning')
+            return FileProcessStatus.PREVIEW_CANCELLED
+        if preview_result is not True:
+            log_cb(
+                "  Файл не записан: предпросмотр не подтвердил сохранение",
+                'error',
+            )
+            return None
     else:
         issues = validate_preview_translations(to_translate_val, translated_vals)
         if issues:
@@ -1198,6 +1280,31 @@ def collect_yml_files(root: str) -> List[str]:
             if f.endswith('.yml') and f.lower() != 'languages.yml':
                 res.append(os.path.join(d, f))
     return res
+
+
+def validate_output_path_collisions(source_destination_pairs: List[Tuple[str, str]]) -> None:
+    """Reject distinct source files that would overwrite the same output path."""
+    destinations: Dict[str, List[Tuple[str, str]]] = {}
+    for source_path, destination_path in source_destination_pairs:
+        normalized = os.path.normcase(
+            os.path.realpath(os.path.abspath(os.path.expanduser(destination_path)))
+        ).casefold()
+        destinations.setdefault(normalized, []).append((source_path, destination_path))
+
+    collisions = []
+    for entries in destinations.values():
+        unique_sources = list(dict.fromkeys(source for source, _ in entries))
+        if len(unique_sources) > 1:
+            collisions.append((entries[0][1], unique_sources))
+
+    if collisions:
+        details = "; ".join(
+            f"{destination} ← {', '.join(sources)}"
+            for destination, sources in collisions[:10]
+        )
+        remaining = len(collisions) - min(len(collisions), 10)
+        more = f"; и ещё {remaining} коллизий" if remaining else ""
+        raise ValueError(f"Коллизия выходных файлов: {details}{more}")
 
 # ---------------------------------------------------------------------------
 # НАСТРОЙКИ И ЗАЩИЩЁННОЕ ХРАНЕНИЕ API-КЛЮЧА
@@ -1872,6 +1979,8 @@ class App(tk.Tk):
         start_t = time.time()
         total_lines = 0
         processed_files = 0
+        completed_files = 0
+        preview_cancellations = 0
         errors = 0
         self.log_line(
             f"Запуск... Движок: {engine_name} | {source_ln} → {target_ln} | "
@@ -1880,6 +1989,22 @@ class App(tk.Tk):
 
         try:
             validate_directory_relationships(src, dst)
+            files = collect_yml_files(src)
+            total_files = len(files)
+            if total_files == 0:
+                self.log_line("Файлы .yml не найдены!", 'error')
+                self._post_ui(self.status_var.set, "Нет файлов")
+                return
+
+            output_pairs = [(fp, rename_dst(fp, src, dst, target_ln)) for fp in files]
+            try:
+                validate_output_path_collisions(output_pairs)
+            except ValueError as error:
+                self.log_line(str(error) + ". Ни один файл не был записан.", 'error')
+                self._post_ui(self.status_var.set, "Коллизия выходных файлов")
+                return
+            output_paths = dict(output_pairs)
+
             if not jar_path:
                 if hasattr(sys, '_MEIPASS'):
                     base_dir = sys._MEIPASS
@@ -1901,13 +2026,6 @@ class App(tk.Tk):
                 translator.__aenter__(), self._async_loop
             ).result()
 
-            files = collect_yml_files(src)
-            total_files = len(files)
-            if total_files == 0:
-                self.log_line("Файлы .yml не найдены!", 'error')
-                self._post_ui(self.status_var.set, "Нет файлов")
-                return
-
             self._post_ui(self.progress.configure, maximum=total_files, value=0)
             self._post_ui(self.progress_lines.configure, maximum=1, value=0)
             self._post_ui(self.progress_file_lbl.configure, text=f"0/{total_files}")
@@ -1926,7 +2044,7 @@ class App(tk.Tk):
                 self._post_ui(self.progress_lines.configure, maximum=1, value=0)
                 self._post_ui(self.progress_lines_lbl.configure, text="0/?")
 
-                dst_path = rename_dst(fp, src, dst, target_ln)
+                dst_path = output_paths[fp]
 
                 def make_line_cb():
                     def cb(done, total):
@@ -1944,13 +2062,14 @@ class App(tk.Tk):
                                 if self._closing:
                                     done_evt.set()
                                     return
+                                def accept_preview(edited):
+                                    result.update({'approved': True, 'translations': edited})
+                                    done_evt.set()
+
                                 PreviewWindow(
                                     self, fp_, orig_vals, trans_vals,
-                                    on_accept=lambda edited: (
-                                        result.update({'approved': True, 'translations': edited}),
-                                        done_evt.set()
-                                    ),
-                                    on_cancel=done_evt.set
+                                    on_accept=accept_preview,
+                                    on_cancel=done_evt.set,
                                 )
 
                             self._post_ui(open_preview)
@@ -1964,14 +2083,14 @@ class App(tk.Tk):
                                         + "; ".join(issues[:5]),
                                         'error',
                                     )
-                                    return
+                                    return None
                                 for line_idx, translated, (pfx, sfx, line_ending) in zip(
                                     idxs, result['translations'], meta
                                 ):
                                     out_lines[line_idx] = f'{pfx}"{translated}"{sfx}{line_ending}'
                                 atomic_write_lines(dst_path_arg, out_lines)
-                            else:
-                                self.log_line("  — Предпросмотр отменён, файл не записан", 'warning')
+                                return True
+                            return False
                         return cb
                     preview_cb = make_preview_cb()
 
@@ -1982,6 +2101,16 @@ class App(tk.Tk):
                         line_progress_cb=make_line_cb(), preview_cb=preview_cb,
                     )
                     processed_files = i + 1
+                    if count is FileProcessStatus.PREVIEW_CANCELLED:
+                        preview_cancellations += 1
+                        if self._stop_event.is_set():
+                            break
+                        self._post_ui(self.progress.configure, value=i + 1)
+                        self._post_ui(
+                            self.progress_file_lbl.configure,
+                            text=f"{i+1}/{total_files}",
+                        )
+                        continue
                     if count is None:
                         if self._stop_event.is_set():
                             break
@@ -1995,6 +2124,7 @@ class App(tk.Tk):
                         )
                         continue
                     total_lines += count
+                    completed_files += 1
 
                     elapsed = time.time() - start_t
                     if elapsed > 0 and total_lines > 0:
@@ -2014,18 +2144,30 @@ class App(tk.Tk):
 
             elapsed = int(time.time() - start_t)
             minutes, seconds = divmod(elapsed, 60)
-            state = "Остановлено" if self._stop_event.is_set() else "Готово"
+            if self._stop_event.is_set():
+                state = "Остановлено"
+            elif preview_cancellations:
+                state = "Завершено с отменами предпросмотра"
+            else:
+                state = "Готово"
             summary = (
                 f"{state}! Файлов: {processed_files}/{total_files} | "
                 f"строк: {total_lines} | {minutes:02d}:{seconds:02d}"
             )
+            if preview_cancellations:
+                summary += f" | отмен предпросмотра: {preview_cancellations}"
             if errors:
                 summary += f" | ошибок: {errors}"
 
             self._post_ui(self.status_var.set, summary)
             self._post_ui(self.speed_var.set, "")
             self.log_line("=" * 50, 'info')
-            self.log_line(summary, 'success' if not errors else 'warning')
+            result_tag = (
+                'success'
+                if not errors and not preview_cancellations and not self._stop_event.is_set()
+                else 'warning'
+            )
+            self.log_line(summary, result_tag)
 
             validation = translator.validation_report
             self.log_line(
@@ -2040,7 +2182,7 @@ class App(tk.Tk):
                     )
             self.log_line("=" * 50, 'info')
 
-            if open_output and not self._stop_event.is_set():
+            if open_output and completed_files and not self._stop_event.is_set():
                 try:
                     os.startfile(dst)
                 except Exception:
