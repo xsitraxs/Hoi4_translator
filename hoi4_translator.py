@@ -103,7 +103,7 @@ def _atomic_write(path: str, write_content, encoding: str) -> None:
         prefix=f".{os.path.basename(destination)}.", suffix=".tmp", dir=parent
     )
     try:
-        with os.fdopen(descriptor, "w", encoding=encoding) as stream:
+        with os.fdopen(descriptor, "w", encoding=encoding, newline="") as stream:
             descriptor = -1
             write_content(stream)
             stream.flush()
@@ -139,23 +139,52 @@ def atomic_write_lines(path: str, lines) -> None:
 # КОНСТАНТЫ И РЕГУЛЯРКИ
 # ---------------------------------------------------------------------------
 
+# Tokens that must survive machine translation byte-for-byte.  In particular,
+# HOI4 uses numeric gradient colours (§0..§9), icon frame suffixes (£icon|1),
+# doubled dollars ($$), and backslash escapes such as \" and \n.
 PLACEHOLDER_RE = re.compile(
-r'(\$[^$]+\$|\[[^\]]*\]|§[A-Za-z!]|\n|\t|£\w+|@\w+\[!?\]?)'
+    r'(\$\$|\$[^$]+\$|\[[^\]]*\]|§[A-Za-z0-9!]|\\+.|\\{2,}|£\w+(?:\|\d+)?|@\w+\[!?\]?)'
 )
 
-# FIX: VALUE_RE теперь матчит KEY: "text" и KEY:0 "text" и KEY:0"text"
-VALUE_RE = re.compile(r'^(\s*\S+:\d*\s*)"(.+)"(.*)$')
+# HOI4 keys are ASCII identifiers; the version is optional and numeric only.
+# The value parser understands escaped quotes and keeps comments/suffixes intact.
+VALUE_RE = re.compile(
+    r'^(\s*[A-Za-z0-9_.-]+:\d*\s*)"((?:[^"\\]|\\.)*)"(.*)$'
+)
+LANGUAGE_HEADER_RE = re.compile(r'^[ \t]*l_([A-Za-z0-9_]+):[ \t]*(?:#.*)?$', re.IGNORECASE)
 
-# Коды локализации HoI4: короткий язык -> имя заголовка и каталога игры.
+# Short translator code -> one of HOI4's built-in localization databases.
 HOI4_LANGUAGE_NAMES = {
-    "en": "english", "ru": "russian", "uk": "ukrainian",
-    "pl": "polish", "de": "german", "fr": "french",
-    "es": "spanish", "pt": "brazilian", "it": "italian",
-    "ja": "japanese", "zh-CN": "simp_chinese", "ko": "korean",
-    "tr": "turkish", "cs": "czech", "hu": "hungarian",
-    "ro": "romanian",
+    "en": "english", "fr": "french", "de": "german", "es": "spanish",
+    "pt": "braz_por", "pl": "polish", "ru": "russian", "ja": "japanese",
+    "zh-CN": "simp_chinese", "ko": "korean",
 }
 HOI4_LANGUAGE_DIRECTORIES = {name.casefold() for name in HOI4_LANGUAGE_NAMES.values()}
+HOI4_LANGUAGE_NAMES_BY_CODE = {
+    code.casefold(): name for code, name in HOI4_LANGUAGE_NAMES.items()
+}
+# Display order is kept separate from the translator's language codes so the
+# output target can only be one of the game's built-in localization databases.
+HOI4_TARGET_LANGS = [
+    ("en", "Английский"), ("fr", "Французский"), ("de", "Немецкий"),
+    ("es", "Испанский"), ("pt", "Бразильский португальский"),
+    ("pl", "Польский"), ("ru", "Русский"), ("ja", "Японский"),
+    ("zh-CN", "Упрощённый китайский"), ("ko", "Корейский"),
+]
+
+
+def get_hoi4_language_name(target_lang: str) -> str:
+    """Return the internal HOI4 database name or reject an unsupported target."""
+    if isinstance(target_lang, str):
+        language_name = HOI4_LANGUAGE_NAMES_BY_CODE.get(target_lang.casefold())
+        if language_name:
+            return language_name
+    supported = ", ".join(HOI4_LANGUAGE_NAMES)
+    raise ValueError(
+        f"Неподдерживаемый целевой язык HOI4: {target_lang!r}. "
+        f"Доступны: {supported}."
+    )
+
 
 # Лимит параллельных запросов к переводчику (защита от бана)
 SEMAPHORE_LIMIT = 15
@@ -171,72 +200,65 @@ class TranslationCancelled(Exception):
 
 class PostProcessor:
     """
-    Исправляет типичные косяки машинного перевода в HoI4 локализации.
-    Все правила применяются последовательно после получения перевода.
+    Исправляет типичные косяки машинного перевода, не меняя игровой синтаксис.
+    Маркеры локализации временно экранируются на время типографических правок.
     """
 
-    # Пробел между цветовым кодом (не §W и не §!) и следующей буквой/цифрой
-    # §W и §! — сброс цвета, пробел после них важен
-    _COLOR_CODE_RE = re.compile(r'(§[A-VX-Za-vx-z])\s+(\S)')
-    # Двойные пробелы
-    # Двойные пробелы
     _DOUBLE_SPACE_RE = re.compile(r'  +')
-    # Пробел перед знаком препинания (русская типографика)
     _SPACE_BEFORE_PUNCT_RE = re.compile(r' ([,;:!?»])')
-    # Пробел после открывающей кавычки
     _SPACE_AFTER_OPEN_QUOTE_RE = re.compile(r'«\s+')
-    # Пробел перед закрывающей кавычкой
     _SPACE_BEFORE_CLOSE_QUOTE_RE = re.compile(r'\s+»')
-    # Английские кавычки → русские (только если нет плейсхолдеров)
     _ENG_QUOTE_RE = re.compile(r'"([^"]+)"')
-    # Артефакт перевода: <<PH…>> который не восстановился (на всякий)
-    _LEFTOVER_PH_RE = re.compile(r'<<PH\d+>>')
-    # Пробелы вокруг \n (литерального)
     _SPACE_AROUND_NEWLINE_RE = re.compile(r'\s*\\n\s*')
-    # Первая буква после §X должна быть заглавной (если это начало слова)
-    _LOWER_AFTER_COLOR_RE = re.compile(r'(§[A-Za-z!])([а-яё])')
+    # §W is a colour code, §! ends formatting. Numeric codes are gradients.
+    _COLOR_CODE_RE = re.compile(r'(§[A-Za-z0-9])\s*([а-яёА-ЯЁa-zA-Z])')
+    _LEFTOVER_PH_RE = re.compile(r'<<PH\d+>>')
 
     @classmethod
     def process(cls, text: str, original: str) -> str:
-        """
-        Применяет все правила постобработки.
-        original передаётся для проверок (например, сохранение регистра).
-        """
-        
-        # FIX #2: проверка на пустую строку — до любых замен
+        """Apply typography fixes outside HOI4/YAML tokens only."""
         if not text:
             return text
-        text = cls._ENG_QUOTE_RE.sub(r'«\1»', text)
 
-        # 1. Убираем пробелы вокруг \\n (HoI4 literal newline)
+        # HOI4 newline escapes are literal two-character sequences in a value.
         text = cls._SPACE_AROUND_NEWLINE_RE.sub(r'\\n', text)
 
-        # 2. Двойные пробелы → одинарный (ДО §-правил — сохраняем пробельный контекст)
-        text = cls._DOUBLE_SPACE_RE.sub(' ', text)
+        # Keep every game token opaque to punctuation and quote cleanup. Leave
+        # colour-start codes visible so the legacy spacing/capitalization fix
+        # can still run; §! and all non-colour tokens remain protected.
+        tokens = []
+        marker_prefix = "\uE000HOI4PP_"
+        while marker_prefix in text:
+            marker_prefix += "_"
 
-        # 3+4. Капитализация + удаление пробела после §X в одном шаге.
-        #   §W и §! — сброс цвета, их не трогаем (они не входят в диапазон A-V / X-Z).
-        #   FIX: старый паттерн матчил только [а-яё], пропуская латиницу.
-        #   Новый паттерн: §X + любые пробелы + первая буква (кириллица ИЛИ латиница).
-        def _fix_color(m):
-            code, letter = m.group(1), m.group(2)
-            return code + letter.upper()
-        text = re.sub(r'(§[A-VX-Za-vx-z])\s*([а-яёА-ЯЁa-zA-Z])', _fix_color, text)
+        def protect_token(match):
+            token = match.group(0)
+            if re.fullmatch(r'§[A-Za-z0-9]', token):
+                return token
+            index = len(tokens)
+            tokens.append(token)
+            return f"{marker_prefix}{index}\uE001"
 
-        # 5. Убираем пробел перед знаком препинания
-        text = cls._SPACE_BEFORE_PUNCT_RE.sub(r'\1', text)
+        protected = PLACEHOLDER_RE.sub(protect_token, text)
+        protected = cls._ENG_QUOTE_RE.sub(r'«\1»', protected)
+        protected = cls._DOUBLE_SPACE_RE.sub(' ', protected)
 
-        # 6. Пробелы внутри кавычек-ёлочек
-        text = cls._SPACE_AFTER_OPEN_QUOTE_RE.sub('«', text)
-        text = cls._SPACE_BEFORE_CLOSE_QUOTE_RE.sub('»', text)
+        def fix_color(match):
+            return match.group(1) + match.group(2).upper()
 
-        # 7. Остаточные незакрытые PH-маркеры (аварийная очистка)
-        text = cls._LEFTOVER_PH_RE.sub('', text)
+        protected = cls._COLOR_CODE_RE.sub(fix_color, protected)
+        protected = cls._SPACE_BEFORE_PUNCT_RE.sub(r'\1', protected)
+        protected = cls._SPACE_AFTER_OPEN_QUOTE_RE.sub('«', protected)
+        protected = cls._SPACE_BEFORE_CLOSE_QUOTE_RE.sub('»', protected)
+        protected = protected.strip(' ')
 
-        # 8. trim пробелов (\\n в HoI4 значимы — не трогаем)
-        text = text.strip(' ')
-
-        return text
+        marker_re = re.compile(re.escape(marker_prefix) + r'(\d+)\uE001')
+        protected = marker_re.sub(
+            lambda match: tokens[int(match.group(1))]
+            if int(match.group(1)) < len(tokens) else match.group(0),
+            protected,
+        )
+        return cls._LEFTOVER_PH_RE.sub('', protected)
 
 
 # ---------------------------------------------------------------------------
@@ -251,8 +273,7 @@ class PlaceholderValidator:
 
     @staticmethod
     def extract_placeholders(text: str) -> List[str]:
-        # Нормализуем экранирование переносов строк (движки часто дублируют слэш)
-        text = text.replace('\\\\n', '\\n').replace('\\\\r', '\\r')
+        # Escapes are protected before translation, so they must match exactly.
         return PLACEHOLDER_RE.findall(text)
 
     @classmethod
@@ -291,36 +312,11 @@ class PlaceholderValidator:
 
         return issues
 
-    @classmethod
-    def try_fix(cls, original: str, translated: str) -> str:
-        """
-        Пытается автоматически восстановить потерянные плейсхолдеры.
-        Стратегия: дописываем потерянные в конец (лучше чем потерять совсем).
-        """
-        orig_phs = cls.extract_placeholders(original)
-        trans_phs = cls.extract_placeholders(translated)
 
-        orig_counts: Dict[str, int] = {}
-        for ph in orig_phs:
-            orig_counts[ph] = orig_counts.get(ph, 0) + 1
-
-        trans_counts: Dict[str, int] = {}
-        for ph in trans_phs:
-            trans_counts[ph] = trans_counts.get(ph, 0) + 1
-
-        missing = []
-        for ph, count in orig_counts.items():
-            deficit = count - trans_counts.get(ph, 0)
-            missing.extend([ph] * deficit)
-
-        if missing:
-            translated = translated.rstrip() + ' ' + ' '.join(missing)
-
-        return translated
 
 
 def validate_preview_translations(originals: List[str], translations: List[str]) -> List[str]:
-    """Return preview rows whose edits added, removed, or duplicated game tokens."""
+    """Return preview rows that break the one-line value format or game tokens."""
     if len(originals) != len(translations):
         return [
             f"Количество строк изменилось: ожидалось {len(originals)}, получено {len(translations)}"
@@ -328,7 +324,12 @@ def validate_preview_translations(originals: List[str], translations: List[str])
 
     problems = []
     for row_number, (original, translated) in enumerate(zip(originals, translations), start=1):
-        issues = PlaceholderValidator.validate(original, translated)
+        issues = []
+        if "\n" in translated or "\r" in translated:
+            issues.append("значение должно занимать одну физическую строку; используйте \\n")
+        if _has_unescaped_quote(translated):
+            issues.append('внутренние кавычки нужно экранировать как \\"')
+        issues.extend(PlaceholderValidator.validate(original, translated))
         if issues:
             problems.append(f"Строка {row_number}: {', '.join(issues)}")
     return problems
@@ -615,22 +616,21 @@ class AsyncTranslator:
 
         # --- 6. ВАЛИДАЦИЯ ---
         issues = PlaceholderValidator.validate(text, final_text)
-        auto_fixed = False
         if issues:
-            # Пробуем авто-фикс
-            fixed = PlaceholderValidator.try_fix(text, final_text)
-            fixed_issues = PlaceholderValidator.validate(text, fixed)
-            if not fixed_issues:
-                final_text = fixed
-                auto_fixed = True
-                logger.info(f"Авто-фикс плейсхолдеров: {issues}")
-            else:
-                logger.warning(f"Битый перевод [{_key_ctx}]: {issues}")
-
-        self.validation_report.record(_file_ctx, _key_ctx, issues, auto_fixed)
+            # A missing token cannot be safely relocated to the end of the
+            # sentence. Leave it visible to validation/preview instead.
+            logger.warning(f"Битый перевод [{_key_ctx}]: {issues}")
 
         # --- 5. ПОСТОБРАБОТКА ---
         final_text = PostProcessor.process(final_text, text)
+        final_issues = PlaceholderValidator.validate(text, final_text)
+        if final_issues:
+            # Post-processing must not silently damage a token that was valid
+            # immediately after translation/restoration.
+            issues = final_issues
+            logger.warning(f"Постобработка нарушила игровые маркеры [{_key_ctx}]: {final_issues}")
+
+        self.validation_report.record(_file_ctx, _key_ctx, issues, auto_fixed=False)
 
         if final_text and final_text != text:
             self.cache.set(text, final_text, self.source_lang, target_lang, used_engine)
@@ -656,8 +656,9 @@ class AsyncTranslator:
 
     async def _google_async(self, text: str, target: str, retries: int) -> str:
         url = "https://translate.googleapis.com/translate_a/single"
+        google_target = "pt-BR" if target.casefold() == "pt" else target
         params = {
-            'client': 'gtx', 'sl': self.source_lang, 'tl': target, 'dt': 't', 'q': text
+            'client': 'gtx', 'sl': self.source_lang, 'tl': google_target, 'dt': 't', 'q': text
         }
         for attempt in range(retries):
             try:
@@ -683,7 +684,13 @@ class AsyncTranslator:
         return text
 
     def _deepl_sync(self, text: str, target: str, retries: int) -> str:
-        translator = DeepL(api_key=self.api_key, source=self.source_lang, target=target, use_pro=False)
+        # HOI4's pt database is Brazilian Portuguese; DeepL distinguishes it
+        # from its default (European) Portuguese target.
+        deepl_target = "PT-BR" if target.casefold() == "pt" else target
+        translator = DeepL(
+            api_key=self.api_key, source=self.source_lang,
+            target=deepl_target, use_pro=False,
+        )
         for attempt in range(retries):
             try:
                 res = translator.translate(text)
@@ -786,25 +793,131 @@ class AsyncTranslator:
 # ОБРАБОТКА ФАЙЛОВ
 # ---------------------------------------------------------------------------
 
-def load_existing_translations(dst_path: str) -> Dict[str, str]:
-    """Загружает непустые значения из уже существующего файла целевого языка.
+SOURCE_LANGUAGE_NAMES = {
+    **HOI4_LANGUAGE_NAMES,
+    "uk": "ukrainian", "it": "italian", "tr": "turkish",
+    "cs": "czech", "hu": "hungarian", "ro": "romanian",
+}
+SOURCE_LANGUAGE_NAMES_BY_CODE = {
+    code.casefold(): name for code, name in SOURCE_LANGUAGE_NAMES.items()
+}
 
-    Нельзя определять наличие перевода по алфавиту: немецкий, польский,
-    китайский и многие другие языки не используют кириллицу.
+
+def _split_line_ending(line: str):
+    if line.endswith("\r\n"):
+        return line[:-2], "\r\n"
+    if line.endswith("\n") or line.endswith("\r"):
+        return line[:-1], line[-1:]
+    return line, ""
+
+
+def _prepare_target_localisation_lines(lines, target_name, source_lang, log_cb):
+    """Return a single-target-language file with the required first-line header.
+
+    When a valid source file contains several language databases, keep only the
+    database matching the selected source language rather than translating all
+    of them into duplicate target keys.
     """
+    header_rows = []
+    for index, line in enumerate(lines):
+        content, _ = _split_line_ending(line)
+        match = LANGUAGE_HEADER_RE.fullmatch(content)
+        if match:
+            header_rows.append((index, match.group(1).casefold()))
+
+    distinct_languages = list(dict.fromkeys(language for _, language in header_rows))
+    selected_source_name = SOURCE_LANGUAGE_NAMES_BY_CODE.get(
+        source_lang.casefold() if isinstance(source_lang, str) else ""
+    )
+    if len(distinct_languages) == 1 and selected_source_name:
+        actual_source_name = distinct_languages[0]
+        if selected_source_name != actual_source_name:
+            log_cb(
+                f"  Предупреждение: заголовок файла l_{actual_source_name} не совпадает "
+                f"с выбранным исходным языком {source_lang!r}",
+                "warning",
+            )
+
+    if len(distinct_languages) > 1:
+        source_name = selected_source_name
+        if source_name not in distinct_languages:
+            found = ", ".join(f"l_{name}" for name in distinct_languages)
+            requested = source_lang or "не задан"
+            log_cb(
+                f"  Файл содержит несколько языковых баз ({found}), "
+                f"но выбранный исходный язык {requested!r} не совпадает ни с одной; "
+                "файл пропущен",
+                "error",
+            )
+            return None
+
+        first_header = header_rows[0][0]
+        selected_blocks = []
+        for row_number, (start, language) in enumerate(header_rows):
+            stop = header_rows[row_number + 1][0] if row_number + 1 < len(header_rows) else len(lines)
+            if language == source_name:
+                selected_blocks.extend(lines[start:stop])
+        lines = list(lines[:first_header]) + selected_blocks
+        log_cb(
+            f"  В файле несколько языковых баз; оставлена l_{source_name} "
+            f"(исходный язык {source_lang})",
+            "info",
+        )
+
+    output = []
+    header_indexes = set()
+    structure_changed = False
+    for index, line in enumerate(lines):
+        content, ending = _split_line_ending(line)
+        if LANGUAGE_HEADER_RE.fullmatch(content):
+            output.append(f"l_{target_name}:{ending}")
+            header_indexes.add(index)
+            if content != f"l_{target_name}:":
+                structure_changed = True
+        else:
+            output.append(line)
+
+    if 0 not in header_indexes:
+        line_ending = next(
+            (ending for _, ending in (_split_line_ending(line) for line in output) if ending),
+            "\n",
+        )
+        output.insert(0, f"l_{target_name}:{line_ending}")
+        header_indexes = {0, *(index + 1 for index in header_indexes)}
+        structure_changed = True
+
+    return output, header_indexes, structure_changed
+
+
+def load_existing_translations(dst_path: str) -> Dict[str, str]:
+    """Load non-empty values from an existing target-language file."""
     existing = {}
     if not os.path.exists(dst_path):
         return existing
     try:
         with open(dst_path, 'r', encoding='utf-8-sig') as f:
             for line in f:
-                # Убираем перенос строки перед проверкой regex
-                m = VALUE_RE.match(line.rstrip('\r\n'))
-                if m and m.group(2).strip():
-                    existing[m.group(1).strip()] = m.group(2)
+                content, _ = _split_line_ending(line)
+                match = VALUE_RE.match(content)
+                if match and match.group(2).strip():
+                    existing[match.group(1).strip()] = match.group(2)
     except Exception as e:
         logger.error(f"Error reading existing translations: {e}")
     return existing
+
+
+def _has_unescaped_quote(text: str) -> bool:
+    """Return whether a value contains a raw quote instead of an escaped \"."""
+    backslashes = 0
+    for character in text:
+        if character == "\\":
+            backslashes += 1
+            continue
+        if character == '"' and backslashes % 2 == 0:
+            return True
+        backslashes = 0
+    return False
+
 
 def process_file_sync(
     src_path: str,
@@ -818,7 +931,15 @@ def process_file_sync(
     line_progress_cb=None,
     preview_cb=None,
 ) -> Optional[int]:
-    # FIX #7: os.path.dirname может вернуть '' если dst_path — просто имя файла
+    target_name = get_hoi4_language_name(target_lang)
+    required_suffix = f"_l_{target_name}.yml"
+    if not os.path.basename(dst_path).casefold().endswith(required_suffix.casefold()):
+        log_cb(
+            f"  Файл пропущен: имя результата должно заканчиваться на {required_suffix}",
+            'error',
+        )
+        return None
+
     _dst_parent = os.path.dirname(dst_path)
     if _dst_parent:
         os.makedirs(_dst_parent, exist_ok=True)
@@ -827,8 +948,15 @@ def process_file_sync(
     if existing:
         log_cb(f"  Найдено переведённых строк в файле: {len(existing)}", 'info')
 
-    with open(src_path, 'r', encoding='utf-8-sig') as f:
-        lines = f.readlines()
+    with open(src_path, 'r', encoding='utf-8-sig', newline='') as f:
+        source_lines = f.readlines()
+
+    prepared = _prepare_target_localisation_lines(
+        source_lines, target_name, getattr(translator, "source_lang", None), log_cb
+    )
+    if prepared is None:
+        return None
+    lines, header_indexes, structure_changed = prepared
 
     out_lines = list(lines)
     to_translate_idx = []
@@ -836,38 +964,50 @@ def process_file_sync(
     to_translate_keys = []
     meta = []
     skipped = 0
+    malformed_lines = []
 
     for i, line in enumerate(lines):
         if stop_event.is_set():
             return None
 
-        if i == 0 and line.strip().startswith('l_'):
-            lang_tag = HOI4_LANGUAGE_NAMES.get(
-                target_lang, target_lang.replace('-', '_').lower()
-            )
-            # ✅ Исправлен regex: l_[a-z_]+ чтобы ловить теги с подчёркиваниями
-            out_lines[i] = re.sub(r'^(\s*)l_[a-z_]+:', rf'\1l_{lang_tag}:', line)
+        if i in header_indexes:
             continue
 
-        m = VALUE_RE.match(line)
-        if not m:
-            continue 
+        line_content, line_ending = _split_line_ending(line)
+        match = VALUE_RE.match(line_content)
+        if not match:
+            stripped = line_content.strip()
+            if stripped and not stripped.startswith('#') and ':' in stripped:
+                malformed_lines.append(i + 1)
+            continue
 
-        prefix, value, suffix = m.group(1), m.group(2), m.group(3)
+        prefix, value, suffix = match.group(1), match.group(2), match.group(3)
         key = prefix.strip()
 
         if skip_translated and key in existing:
-            # Сохраняем оригинальное форматирование строки
-            out_lines[i] = f'{prefix}"{existing[key]}"{suffix}\n'
+            out_lines[i] = f'{prefix}"{existing[key]}"{suffix}{line_ending}'
             skipped += 1
         else:
             to_translate_idx.append(i)
             to_translate_val.append(value)
             to_translate_keys.append(key)
-            meta.append((prefix, suffix))
+            meta.append((prefix, suffix, line_ending))
+
+    if malformed_lines:
+        rows = ", ".join(map(str, malformed_lines[:10]))
+        remaining = len(malformed_lines) - min(len(malformed_lines), 10)
+        more = f" и ещё {remaining}" if remaining else ""
+        log_cb(
+            f"  Файл пропущен: строки {rows}{more} не соответствуют формату "
+            'локализации (ключ:"значение"); проверьте ключи, кавычки и версию',
+            'error',
+        )
+        return None
 
     total = len(to_translate_val)
     if total == 0:
+        if structure_changed:
+            atomic_write_lines(dst_path, out_lines)
         if skipped:
             log_cb(f"  Пропущено (уже переведено): {skipped}", 'info')
         return 0
@@ -896,12 +1036,34 @@ def process_file_sync(
     if stop_event.is_set():
         return None
 
+    multiline_rows = [
+        index + 1 for index, value in zip(to_translate_idx, translated_vals)
+        if "\n" in value or "\r" in value
+    ]
+    if multiline_rows:
+        rows = ", ".join(map(str, multiline_rows[:10]))
+        log_cb(
+            f"  Файл не записан: перевод вернул физические переносы строк "
+            f"в значениях (строки {rows}); используйте литеральный \\n",
+            'error',
+        )
+        return None
+
     if preview_cb:
         preview_cb(to_translate_val, translated_vals, to_translate_idx, meta, out_lines, dst_path)
     else:
-        # ✅ Исправлена запись: убираем лишний пробел внутри кавычек, восстанавливаем \n корректно
-        for line_idx, translated, (pfx, sfx) in zip(to_translate_idx, translated_vals, meta):
-            out_lines[line_idx] = f'{pfx}"{translated}"{sfx}\n'
+        issues = validate_preview_translations(to_translate_val, translated_vals)
+        if issues:
+            log_cb(
+                "  Файл не записан: перевод нарушает формат локализации: "
+                + "; ".join(issues[:5]),
+                'error',
+            )
+            return None
+        for line_idx, translated, (prefix, suffix, line_ending) in zip(
+            to_translate_idx, translated_vals, meta
+        ):
+            out_lines[line_idx] = f'{prefix}"{translated}"{suffix}{line_ending}'
         atomic_write_lines(dst_path, out_lines)
 
     if skipped:
@@ -915,17 +1077,24 @@ def process_file_sync(
 
     return total
 
-def rename_dst(src_path: str, src_root: str, dst_root: str, target_lang: str = "ru") -> str:
-    """Строит путь перевода с корректным HoI4-тегом и каталогом языка."""
-    rel = os.path.relpath(src_path, src_root)
-    target_name = HOI4_LANGUAGE_NAMES.get(
-        target_lang, target_lang.replace('-', '_').lower()
-    )
-    rel_renamed = re.sub(
-        r'_l_[a-z0-9_-]+\.yml$', f'_l_{target_name}.yml', rel, flags=re.IGNORECASE
-    )
 
-    # Меняем только отдельные компоненты пути, совпадающие с каталогами локализаций.
+def rename_dst(src_path: str, src_root: str, dst_root: str, target_lang: str = "ru") -> str:
+    """Build an output path using a valid HOI4 language directory and suffix."""
+    rel = os.path.relpath(src_path, src_root)
+    target_name = get_hoi4_language_name(target_lang)
+    parent, filename = os.path.split(rel)
+    stem, extension = os.path.splitext(filename)
+    if extension.casefold() != ".yml":
+        raise ValueError("Локализационные файлы HOI4 должны иметь расширение .yml")
+
+    # Replace a previous internal-language suffix, or add one if the input is
+    # a generic .yml name. HOI4 uses the language suffix to decide its database.
+    stem = re.sub(r'_l_[a-z0-9_-]+$', '', stem, flags=re.IGNORECASE)
+    filename = f"{stem}_l_{target_name}.yml"
+    rel_renamed = os.path.join(parent, filename) if parent else filename
+
+    # Folder names are organizational only, but update recognized language
+    # directories to keep the conventional mod layout.
     parts = re.split(r'([\\/])', rel_renamed)
     for index, part in enumerate(parts):
         if part.casefold() in HOI4_LANGUAGE_DIRECTORIES:
@@ -1231,26 +1400,19 @@ class App(tk.Tk):
         self.lang_var = tk.StringVar(value="en")
         ttk.Combobox(
             row1, textvariable=self.lang_var,
-            values=["en", "de", "fr", "es", "pl", "pt", "it", "ja", "zh-CN", "ko"],
+            values=["en", "de", "fr", "es", "pl", "pt", "ru", "it", "ja", "zh-CN", "ko"],
             state="readonly", width=7
         ).pack(side='left', padx=5)
 
         ttk.Label(row1, text="→  На язык:").pack(side='left', padx=(10, 0))
         self.target_lang_var = tk.StringVar(value="ru")
-        TARGET_LANGS = [
-            ("ru", "Русский"), ("uk", "Украинский"), ("pl", "Польский"),
-            ("de", "Немецкий"), ("fr", "Французский"), ("es", "Испанский"),
-            ("pt", "Португальский"), ("it", "Итальянский"), ("zh-CN", "Китайский"),
-            ("ja", "Японский"), ("ko", "Корейский"), ("tr", "Турецкий"),
-            ("cs", "Чешский"), ("hu", "Венгерский"), ("ro", "Румынский"),
-        ]
-        self._target_lang_map = {label: code for code, label in TARGET_LANGS}
-        self._target_lang_rev = {code: label for code, label in TARGET_LANGS}
+        self._target_lang_map = {label: code for code, label in HOI4_TARGET_LANGS}
+        self._target_lang_rev = {code: label for code, label in HOI4_TARGET_LANGS}
         self.target_lang_cb = ttk.Combobox(
-            row1, values=[label for _, label in TARGET_LANGS],
-            state="readonly", width=13
+            row1, values=[label for _, label in HOI4_TARGET_LANGS],
+            state="readonly", width=23
         )
-        self.target_lang_cb.set("Русский")
+        self.target_lang_cb.set(self._target_lang_rev["ru"])
         self.target_lang_cb.pack(side='left', padx=5)
         self.target_lang_cb.bind("<<ComboboxSelected>>", self._on_target_lang_change)
 
@@ -1341,7 +1503,8 @@ class App(tk.Tk):
         self.target_lang_var.set(code)
 
     def _get_target_lang(self) -> str:
-        return self.target_lang_var.get() or "ru"
+        code = self.target_lang_var.get()
+        return code if code.casefold() in HOI4_LANGUAGE_NAMES_BY_CODE else "ru"
 
     def _toggle_api_field(self, event=None):
         if self.engine_var.get() == "DeepL":
@@ -1483,10 +1646,20 @@ class App(tk.Tk):
         if s.get('preview') is not None: self.preview_var.set(s['preview'])
         if s.get('java_jar'): self.java_jar_var.set(s['java_jar'])
         if s.get('target_lang'):
-            code = s['target_lang']
+            saved_code = str(s['target_lang'])
+            code = next(
+                (supported for supported, _ in HOI4_TARGET_LANGS
+                 if supported.casefold() == saved_code.casefold()),
+                "ru",
+            )
+            if code.casefold() != saved_code.casefold():
+                self.log_line(
+                    f"Сохранённый целевой язык {saved_code!r} больше не поддерживается HOI4; "
+                    "выбран русский",
+                    'warning',
+                )
             self.target_lang_var.set(code)
-            label = self._target_lang_rev.get(code, "Русский")
-            self.target_lang_cb.set(label)
+            self.target_lang_cb.set(self._target_lang_rev[code])
         self._toggle_api_field()
 
     def _save_current_settings(self):
@@ -1568,6 +1741,11 @@ class App(tk.Tk):
             return
         if engine == "DeepL" and not api_key:
             self.log_line("Ошибка: нужен DeepL API Key!", 'error')
+            return
+        try:
+            get_hoi4_language_name(self._get_target_lang())
+        except ValueError as error:
+            self.log_line(str(error), 'error')
             return
 
         self._stop_event.clear()
@@ -1699,8 +1877,18 @@ class App(tk.Tk):
                             done_evt.wait()
 
                             if result['approved'] and not self._stop_event.is_set():
-                                for line_idx, translated, (pfx, sfx) in zip(idxs, result['translations'], meta):
-                                    out_lines[line_idx] = f'{pfx}"{translated}"{sfx}\n'
+                                issues = validate_preview_translations(orig_vals, result['translations'])
+                                if issues:
+                                    self.log_line(
+                                        "  Файл не записан: предпросмотр нарушает формат локализации: "
+                                        + "; ".join(issues[:5]),
+                                        'error',
+                                    )
+                                    return
+                                for line_idx, translated, (pfx, sfx, line_ending) in zip(
+                                    idxs, result['translations'], meta
+                                ):
+                                    out_lines[line_idx] = f'{pfx}"{translated}"{sfx}{line_ending}'
                                 atomic_write_lines(dst_path_arg, out_lines)
                             else:
                                 self.log_line("  — Предпросмотр отменён, файл не записан", 'warning')
