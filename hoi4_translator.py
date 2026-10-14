@@ -10,9 +10,11 @@ import json
 import sys
 import sqlite3
 import logging
+import tempfile
+import getpass
 from datetime import datetime
 from typing import List, Optional, Dict, Any
-from concurrent.futures import ThreadPoolExecutor
+import queue
 
 # Попытка импорта асинхронных библиотек для ускорения
 try:
@@ -41,9 +43,45 @@ except ImportError:
 # КОНФИГУРАЦИЯ И ЛОГИРОВАНИЕ
 # ---------------------------------------------------------------------------
 
-LOG_FILE = os.path.join(os.path.dirname(__file__), 'hoi4_translator.log')
-DB_FILE = os.path.join(os.path.dirname(__file__), 'translation_cache.db')
-SETTINGS_FILE = os.path.join(os.path.expanduser('~'), '.hoi4_translator_settings.json')
+APP_NAME = "Hoi4Translator"
+
+
+def get_app_data_dir() -> str:
+    """Return a persistent, per-user data directory on each supported OS."""
+    home = os.path.expanduser("~")
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
+    elif sys.platform == "darwin":
+        base = os.path.join(home, "Library", "Application Support")
+    else:
+        xdg_data_home = os.environ.get("XDG_DATA_HOME", "")
+        if xdg_data_home and os.path.isabs(xdg_data_home):
+            base = xdg_data_home
+        else:
+            base = os.path.join(home, ".local", "share")
+
+    directory = os.path.join(base, APP_NAME)
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except OSError:
+        # Last-resort per-user location (still persistent, unlike PyInstaller's _MEIPASS).
+        directory = os.path.join(home, ".hoi4_translator")
+        os.makedirs(directory, exist_ok=True)
+    return directory
+
+
+APP_DATA_DIR = get_app_data_dir()
+LOG_FILE = os.path.join(APP_DATA_DIR, "hoi4_translator.log")
+DB_FILE = os.path.join(APP_DATA_DIR, "translation_cache.db")
+SETTINGS_FILE = os.path.join(APP_DATA_DIR, "settings.json")
+LEGACY_SETTINGS_FILE = os.path.join(
+    os.path.expanduser("~"), ".hoi4_translator_settings.json"
+)
+
+try:
+    import keyring
+except ImportError:
+    keyring = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,6 +92,48 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+
+def _atomic_write(path: str, write_content, encoding: str) -> None:
+    """Write a sibling temporary file and atomically replace the destination."""
+    destination = os.path.abspath(os.fspath(path))
+    parent = os.path.dirname(destination) or os.curdir
+    os.makedirs(parent, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{os.path.basename(destination)}.", suffix=".tmp", dir=parent
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding=encoding) as stream:
+            descriptor = -1
+            write_content(stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if os.path.exists(destination):
+            try:
+                os.chmod(temporary, os.stat(destination).st_mode & 0o777)
+            except OSError:
+                pass
+        os.replace(temporary, destination)
+    except BaseException:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_write_text(path: str, text: str, encoding: str = "utf-8") -> None:
+    _atomic_write(path, lambda stream: stream.write(text), encoding)
+
+
+def atomic_write_lines(path: str, lines) -> None:
+    _atomic_write(path, lambda stream: stream.writelines(lines), "utf-8-sig")
+
 
 # ---------------------------------------------------------------------------
 # КОНСТАНТЫ И РЕГУЛЯРКИ
@@ -66,10 +146,24 @@ r'(\$[^$]+\$|\[[^\]]*\]|§[A-Za-z!]|\n|\t|£\w+|@\w+\[!?\]?)'
 # FIX: VALUE_RE теперь матчит KEY: "text" и KEY:0 "text" и KEY:0"text"
 VALUE_RE = re.compile(r'^(\s*\S+:\d*\s*)"(.+)"(.*)$')
 
-CYRILLIC_RE = re.compile(r'[а-яёА-ЯЁ]')
+# Коды локализации HoI4: короткий язык -> имя заголовка и каталога игры.
+HOI4_LANGUAGE_NAMES = {
+    "en": "english", "ru": "russian", "uk": "ukrainian",
+    "pl": "polish", "de": "german", "fr": "french",
+    "es": "spanish", "pt": "brazilian", "it": "italian",
+    "ja": "japanese", "zh-CN": "simp_chinese", "ko": "korean",
+    "tr": "turkish", "cs": "czech", "hu": "hungarian",
+    "ro": "romanian",
+}
+HOI4_LANGUAGE_DIRECTORIES = {name.casefold() for name in HOI4_LANGUAGE_NAMES.values()}
 
 # Лимит параллельных запросов к переводчику (защита от бана)
 SEMAPHORE_LIMIT = 15
+
+
+class TranslationCancelled(Exception):
+    """Raised when the user stops the active file translation."""
+
 
 # ---------------------------------------------------------------------------
 # 5. ПОСТОБРАБОТКА ПЕРЕВОДА
@@ -225,6 +319,21 @@ class PlaceholderValidator:
         return translated
 
 
+def validate_preview_translations(originals: List[str], translations: List[str]) -> List[str]:
+    """Return preview rows whose edits added, removed, or duplicated game tokens."""
+    if len(originals) != len(translations):
+        return [
+            f"Количество строк изменилось: ожидалось {len(originals)}, получено {len(translations)}"
+        ]
+
+    problems = []
+    for row_number, (original, translated) in enumerate(zip(originals, translations), start=1):
+        issues = PlaceholderValidator.validate(original, translated)
+        if issues:
+            problems.append(f"Строка {row_number}: {', '.join(issues)}")
+    return problems
+
+
 # ---------------------------------------------------------------------------
 # 7. ФОЛБЭК-ЦЕПОЧКА ДВИЖКОВ
 # ---------------------------------------------------------------------------
@@ -316,17 +425,16 @@ class JavaTranslatorService:
 
     def translate_batch_java(self, texts: List[str], target_lang: str = "ru") -> List[str]:
         if not self.java_available or not self._jvm_started:
-            return list(texts)  # фолбэк
+            raise RuntimeError("JavaSim недоступен: JVM или JAR не загружен")
 
         try:
             # Пакет и класс должны точно совпадать с тем, что в .java файле
             JTranslator = jpype.JClass("com.hoi4.translator.HoI4Translator")
             translator = JTranslator()
-            # Вызываем метод для каждой строки
             return [str(translator.translate(t, target_lang)) for t in texts]
         except Exception as e:
-            logger.error(f"Java translation error: {e}")
-            return list(texts)
+            logger.exception("Java translation error")
+            raise RuntimeError(f"Ошибка JavaSim: {e}") from e
 
     def shutdown(self):
         if self._jvm_started and jpype.isJVMStarted():
@@ -468,11 +576,13 @@ class AsyncTranslator:
         if not text or not text.strip():
             return text
 
-        # Проверка кэша
-        cached = self.cache.get(text, self.source_lang, target_lang, self.engine)
-        if cached:
-            logger.debug(f"Cache hit: {text[:30]}...")
-            return cached
+        # Translations are stored under the engine that actually answered. Search
+        # the entire fallback chain so a fallback result can be reused next run.
+        for cached_engine in [self.engine] + FALLBACK_CHAIN.get(self.engine, []):
+            cached = self.cache.get(text, self.source_lang, target_lang, cached_engine)
+            if cached is not None:
+                logger.debug("Cache hit (%s): %s...", cached_engine, text[:30])
+                return cached
 
         protected, tokens = protect_placeholders(text)
 
@@ -532,29 +642,17 @@ class AsyncTranslator:
         if engine == "Google" and ASYNC_OK and self.session:
             return await self._google_async(protected, target, retries)
         elif engine == "DeepL" and self.api_key:
-            # FIX #3: get_running_loop() вместо устаревшего get_event_loop()
-            loop = asyncio.get_running_loop()
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                return await loop.run_in_executor(
-                    pool, lambda: self._deepl_sync(protected, target, retries)
-                )
+            return await asyncio.to_thread(self._deepl_sync, protected, target, retries)
         elif engine == "JavaSim":
-            # FIX #3: get_running_loop() вместо устаревшего get_event_loop()
-            loop = asyncio.get_running_loop()
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                res = await loop.run_in_executor(
-                    pool, lambda: self.java_service.translate_batch_java([protected], target)
-                )
-                return res[0]
+            res = await asyncio.to_thread(
+                self.java_service.translate_batch_java, [protected], target
+            )
+            return res[0]
         else:
             # MyMemory или Google без aiohttp
-            # FIX #3: get_running_loop() вместо устаревшего get_event_loop()
-            loop = asyncio.get_running_loop()
-            eng_copy = engine  # замыкание
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                return await loop.run_in_executor(
-                    pool, lambda: self._sync_fallback(protected, target, retries, eng_copy)
-                )
+            return await asyncio.to_thread(
+                self._sync_fallback, protected, target, retries, engine
+            )
 
     async def _google_async(self, text: str, target: str, retries: int) -> str:
         url = "https://translate.googleapis.com/translate_a/single"
@@ -627,36 +725,73 @@ class AsyncTranslator:
     async def translate_batch(self, texts: List[str], target_lang: str = "ru",
                                keys: Optional[List[str]] = None,
                                file_ctx: str = "",
-                               line_progress_cb=None) -> List[str]:
-        # line_progress_cb(done, total) — вызывается после каждой переведённой строки
-        done_count = 0
+                               line_progress_cb=None,
+                               stop_event: Optional[threading.Event] = None) -> List[str]:
+        """Переводит ограниченными пачками и отменяет незавершённые запросы по Stop."""
         total = len(texts)
-        lock = asyncio.Lock()
+        if total == 0:
+            return []
 
-        async def translate_one(i, t):
+        results: List[Optional[str]] = [None] * total
+        done_count = 0
+        progress_lock = asyncio.Lock()
+        batch_size = max(1, SEMAPHORE_LIMIT)
+
+        async def translate_one(i: int, text: str):
             nonlocal done_count
             result = await self.translate_text_async(
-                t, target_lang,
+                text, target_lang,
                 _file_ctx=file_ctx,
                 _key_ctx=(keys[i] if keys else str(i))
             )
             if line_progress_cb:
-                async with lock:
+                async with progress_lock:
                     done_count += 1
                     line_progress_cb(done_count, total)
-            return result
+            return i, result
 
-        tasks = [translate_one(i, t) for i, t in enumerate(texts)]
-        return await asyncio.gather(*tasks)
+        for first in range(0, total, batch_size):
+            if stop_event and stop_event.is_set():
+                raise TranslationCancelled("Перевод остановлен пользователем")
+
+            last = min(first + batch_size, total)
+            pending = {
+                asyncio.create_task(translate_one(i, texts[i]))
+                for i in range(first, last)
+            }
+            try:
+                while pending:
+                    if stop_event and stop_event.is_set():
+                        for task in pending:
+                            task.cancel()
+                        await asyncio.gather(*pending, return_exceptions=True)
+                        raise TranslationCancelled("Перевод остановлен пользователем")
+
+                    finished, pending = await asyncio.wait(
+                        pending, timeout=0.1, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    for task in finished:
+                        index, translation = task.result()
+                        results[index] = translation
+            except BaseException:
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+                raise
+
+        return [value if value is not None else texts[i] for i, value in enumerate(results)]
 
 # ---------------------------------------------------------------------------
 # ОБРАБОТКА ФАЙЛОВ
 # ---------------------------------------------------------------------------
 
-def has_cyrillic(text: str) -> bool:
-    return bool(CYRILLIC_RE.search(text))
-
 def load_existing_translations(dst_path: str) -> Dict[str, str]:
+    """Загружает непустые значения из уже существующего файла целевого языка.
+
+    Нельзя определять наличие перевода по алфавиту: немецкий, польский,
+    китайский и многие другие языки не используют кириллицу.
+    """
     existing = {}
     if not os.path.exists(dst_path):
         return existing
@@ -665,7 +800,7 @@ def load_existing_translations(dst_path: str) -> Dict[str, str]:
             for line in f:
                 # Убираем перенос строки перед проверкой regex
                 m = VALUE_RE.match(line.rstrip('\r\n'))
-                if m and has_cyrillic(m.group(2)):
+                if m and m.group(2).strip():
                     existing[m.group(1).strip()] = m.group(2)
     except Exception as e:
         logger.error(f"Error reading existing translations: {e}")
@@ -707,14 +842,9 @@ def process_file_sync(
             return None
 
         if i == 0 and line.strip().startswith('l_'):
-            # 🗺️ Маппинг коротких кодов → полные названия языков HoI4
-            hoi4_lang_map = {
-                "en": "english", "ru": "russian", "de": "german", "fr": "french",
-                "es": "spanish", "pl": "polish", "pt": "brazilian", "it": "italian",
-                "ja": "japanese", "zh-CN": "simp_chinese", "ko": "korean", "tr": "turkish",
-                "cs": "czech", "hu": "hungarian", "ro": "romanian", "uk": "ukrainian"
-            }
-            lang_tag = hoi4_lang_map.get(target_lang, target_lang.replace('-', '_'))
+            lang_tag = HOI4_LANGUAGE_NAMES.get(
+                target_lang, target_lang.replace('-', '_').lower()
+            )
             # ✅ Исправлен regex: l_[a-z_]+ чтобы ловить теги с подчёркиваниями
             out_lines[i] = re.sub(r'^(\s*)l_[a-z_]+:', rf'\1l_{lang_tag}:', line)
             continue
@@ -750,13 +880,20 @@ def process_file_sync(
             keys=to_translate_keys,
             file_ctx=rel_path,
             line_progress_cb=line_progress_cb,
+            stop_event=stop_event,
         )
 
     try:
         future = asyncio.run_coroutine_threadsafe(run_translate(), loop)
         translated_vals = future.result(timeout=300)
+    except TranslationCancelled:
+        log_cb("  Перевод файла остановлен; файл не записан", 'warning')
+        return None
     except Exception as e:
         log_cb(f"  Ошибка перевода: {e}", 'error')
+        return None
+
+    if stop_event.is_set():
         return None
 
     if preview_cb:
@@ -765,8 +902,7 @@ def process_file_sync(
         # ✅ Исправлена запись: убираем лишний пробел внутри кавычек, восстанавливаем \n корректно
         for line_idx, translated, (pfx, sfx) in zip(to_translate_idx, translated_vals, meta):
             out_lines[line_idx] = f'{pfx}"{translated}"{sfx}\n'
-        with open(dst_path, 'w', encoding='utf-8-sig') as f:
-            f.writelines(out_lines)
+        atomic_write_lines(dst_path, out_lines)
 
     if skipped:
         log_cb(f"  Пропущено (уже переведено): {skipped}", 'info')
@@ -779,14 +915,42 @@ def process_file_sync(
 
     return total
 
-def rename_dst(src_path: str, src_root: str, dst_root: str) -> str:
+def rename_dst(src_path: str, src_root: str, dst_root: str, target_lang: str = "ru") -> str:
+    """Строит путь перевода с корректным HoI4-тегом и каталогом языка."""
     rel = os.path.relpath(src_path, src_root)
-    rel_renamed = re.sub(r'_l_[a-z]+\.yml$', '_l_russian.yml', rel)
-    rel_renamed = re.sub(
-        r'(?i)(^|[\\/])(english|german|french|spanish|polish)([\\/])',
-        r'\1russian\3', rel_renamed
+    target_name = HOI4_LANGUAGE_NAMES.get(
+        target_lang, target_lang.replace('-', '_').lower()
     )
-    return os.path.join(dst_root, rel_renamed)
+    rel_renamed = re.sub(
+        r'_l_[a-z0-9_-]+\.yml$', f'_l_{target_name}.yml', rel, flags=re.IGNORECASE
+    )
+
+    # Меняем только отдельные компоненты пути, совпадающие с каталогами локализаций.
+    parts = re.split(r'([\\/])', rel_renamed)
+    for index, part in enumerate(parts):
+        if part.casefold() in HOI4_LANGUAGE_DIRECTORIES:
+            parts[index] = target_name
+    return os.path.join(dst_root, ''.join(parts))
+
+def validate_directory_relationships(src_root: str, dst_root: str) -> None:
+    """Reject equal or nested source/output roots to prevent reprocessing or overwrites."""
+    source = os.path.normcase(os.path.realpath(os.path.abspath(os.path.expanduser(src_root))))
+    destination = os.path.normcase(os.path.realpath(os.path.abspath(os.path.expanduser(dst_root))))
+
+    def contains(parent: str, child: str) -> bool:
+        try:
+            return os.path.normcase(os.path.commonpath((parent, child))) == parent
+        except ValueError:
+            # Different Windows drives cannot contain one another.
+            return False
+
+    if contains(source, destination) or contains(destination, source):
+        raise ValueError(
+            "Исходная папка и папка перевода пересекаются. "
+            "Выберите отдельные соседние каталоги, чтобы не перезаписать исходники "
+            "и не обрабатывать результаты повторно."
+        )
+
 
 def collect_yml_files(root: str) -> List[str]:
     res = []
@@ -799,24 +963,133 @@ def collect_yml_files(root: str) -> List[str]:
     return res
 
 # ---------------------------------------------------------------------------
-# НАСТРОЙКИ
+# НАСТРОЙКИ И ЗАЩИЩЁННОЕ ХРАНЕНИЕ API-КЛЮЧА
 # ---------------------------------------------------------------------------
 
-def load_settings() -> dict:
-    try:
-        if os.path.exists(SETTINGS_FILE):
-            with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-    except Exception as e:
-        logger.error(f"Settings load error: {e}")
-    return {}
+KEYRING_SERVICE = "Hoi4Translator"
 
-def save_settings(data: dict):
+
+def _read_settings_file(path: str) -> Optional[dict]:
+    if not os.path.exists(path):
+        return None
     try:
-        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.error(f"Settings save error: {e}")
+        with open(path, "r", encoding="utf-8") as settings_file:
+            data = json.load(settings_file)
+        if isinstance(data, dict):
+            return data
+        logger.error("Settings file must contain a JSON object: %s", path)
+    except Exception as error:
+        logger.error("Settings load error (%s): %s", path, error)
+    return None
+
+
+def _secure_keyring():
+    """Use only OS-backed keyring providers, never a plaintext file backend."""
+    if keyring is None:
+        return None
+    try:
+        backend = keyring.get_keyring()
+        backend_type = type(backend)
+        module_name = backend_type.__module__.casefold()
+        class_name = backend_type.__name__.casefold()
+        trusted_modules = (
+            "keyring.backends.windows",
+            "keyring.backends.macos",
+            "keyring.backends.secretservice",
+            "keyring.backends.kwallet",
+        )
+        if not getattr(backend, "priority", 0) or not module_name.startswith(trusted_modules):
+            logger.warning("No supported OS credential store is available; API key will not be persisted")
+            return None
+        if "plaintext" in class_name or "plaintext" in module_name:
+            logger.warning("Refusing to store the API key in a plaintext keyring backend")
+            return None
+        return keyring
+    except Exception as error:
+        logger.warning("Could not access the OS credential store: %s", error)
+        return None
+
+
+def _keyring_username() -> str:
+    try:
+        return getpass.getuser()
+    except Exception:
+        return os.environ.get("USERNAME") or os.environ.get("USER") or "default"
+
+
+def load_api_key() -> str:
+    secure_store = _secure_keyring()
+    if secure_store is None:
+        return ""
+    try:
+        return secure_store.get_password(KEYRING_SERVICE, _keyring_username()) or ""
+    except Exception as error:
+        logger.warning("Could not read API key from the OS credential store: %s", error)
+        return ""
+
+
+def store_api_key(api_key: str) -> bool:
+    secure_store = _secure_keyring()
+    if secure_store is None:
+        return False
+    username = _keyring_username()
+    try:
+        if api_key:
+            secure_store.set_password(KEYRING_SERVICE, username, api_key)
+        else:
+            existing = secure_store.get_password(KEYRING_SERVICE, username)
+            if existing is not None:
+                secure_store.delete_password(KEYRING_SERVICE, username)
+        return True
+    except Exception as error:
+        logger.warning("Could not update the API key in the OS credential store: %s", error)
+        return False
+
+
+def scrub_plaintext_api_keys() -> None:
+    """Remove API keys written by older versions from legacy JSON settings."""
+    paths = {SETTINGS_FILE, LEGACY_SETTINGS_FILE}
+    for path in paths:
+        data = _read_settings_file(path)
+        if data is None or "api_key" not in data:
+            continue
+        data.pop("api_key", None)
+        try:
+            atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2))
+        except Exception as error:
+            logger.error("Could not remove a plaintext API key from %s: %s", path, error)
+
+
+def load_settings() -> dict:
+    current = _read_settings_file(SETTINGS_FILE)
+    legacy = _read_settings_file(LEGACY_SETTINGS_FILE)
+    settings = current if current is not None else (legacy or {})
+
+    legacy_key = settings.pop("api_key", "")
+    if not legacy_key and legacy is not None:
+        legacy_key = legacy.get("api_key", "")
+    if legacy_key:
+        settings["_legacy_api_key"] = legacy_key
+
+    migrated = current is None and legacy is not None
+    contains_plaintext_key = bool(legacy_key)
+    if migrated or contains_plaintext_key:
+        save_settings(settings)
+    return settings
+
+
+def save_settings(data: dict) -> None:
+    # The API key must only be stored in the OS credential store, never in JSON.
+    safe_data = {
+        name: value for name, value in data.items()
+        if name not in {"api_key", "_legacy_api_key"}
+    }
+    try:
+        atomic_write_text(
+            SETTINGS_FILE, json.dumps(safe_data, ensure_ascii=False, indent=2)
+        )
+    except Exception as error:
+        logger.error("Settings save error: %s", error)
 
 # ---------------------------------------------------------------------------
 # GUI
@@ -829,8 +1102,15 @@ class App(tk.Tk):
         self.minsize(820, 720)
         self.configure(bg='#1a1a1a')
 
+        self._ui_thread = threading.current_thread()
+        self._ui_queue = queue.Queue()
+        self._closing = False
+        self._close_when_finished = False
+        self._translation_thread: Optional[threading.Thread] = None
+        self._secret_warning_shown = False
+
         self._stop_event = threading.Event()
-        self.java_jar_var = tk.StringVar(value="")  # 👈 Путь к JAR
+        self.java_jar_var = tk.StringVar(value="")  # Путь к JAR
 
         # FIX: один async event loop на весь сеанс, запускается в фоновом потоке
         self._async_loop = asyncio.new_event_loop()
@@ -851,6 +1131,36 @@ class App(tk.Tk):
             self.log_line("Режим ускорения: Стандартный (pip install aiohttp для скорости)", 'info')
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._ui_poll_id = self.after(25, self._drain_ui_queue)
+
+    def _post_ui(self, callback, *args, **kwargs):
+        """Run a UI callback now on Tk's thread, or enqueue it from a worker."""
+        if self._closing:
+            return
+        if threading.current_thread() is self._ui_thread:
+            callback(*args, **kwargs)
+        else:
+            self._ui_queue.put((callback, args, kwargs))
+
+    def _drain_ui_queue(self):
+        if self._closing:
+            return
+        while True:
+            try:
+                callback, args, kwargs = self._ui_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                callback(*args, **kwargs)
+            except tk.TclError:
+                # The window may have been closed while a queued notification was pending.
+                if not self._closing:
+                    logger.exception("Tk callback failed")
+            except Exception:
+                logger.exception("UI callback failed")
+            if self._closing:
+                return
+        self._ui_poll_id = self.after(25, self._drain_ui_queue)
 
     def _run_event_loop(self):
         """Фоновый поток с постоянным async event loop"""
@@ -910,7 +1220,7 @@ class App(tk.Tk):
         self.engine_var = tk.StringVar(value="Google")
         engines = ["Google", "DeepL", "MyMemory"]
         if JAVA_OK:
-            engines.append("JavaSim (Test)")
+            engines.append("JavaSim")
 
         self.engine_cb = ttk.Combobox(row1, textvariable=self.engine_var, values=engines, state="readonly", width=15)
         self.engine_cb.pack(side='left', padx=5)
@@ -1095,7 +1405,10 @@ class App(tk.Tk):
                 self.log_line(f"DeepL API проверка не пройдена: {msg}", 'error')
             self.verify_btn.config(state='normal')
 
-        threading.Thread(target=lambda: on_done(*check()), daemon=True).start()
+        def check_and_post():
+            self._post_ui(on_done, *check())
+
+        threading.Thread(target=check_and_post, daemon=True).start()
 
     def browse_src(self):
         d = filedialog.askdirectory(title="Выбери папку с оригинальной локализацией")
@@ -1108,6 +1421,9 @@ class App(tk.Tk):
             self.dst_var.set(d)
 
     def log_line(self, text: str, tag: Optional[str] = None):
+        if threading.current_thread() is not self._ui_thread:
+            self._post_ui(self.log_line, text, tag)
+            return
         self.log_widget.config(state='normal')
         timestamp = datetime.now().strftime("%H:%M:%S")
         full_text = f"[{timestamp}] {text}"
@@ -1123,17 +1439,43 @@ class App(tk.Tk):
         self.log_widget.delete('1.0', 'end')
         self.log_widget.config(state='disabled')
 
+    def _update_line_progress(self, done: int, total: int):
+        self.progress_lines.configure(maximum=max(total, 1), value=done)
+        self.progress_lines_lbl.configure(text=f"{done}/{total}")
+
     def stop(self):
         self._stop_event.set()
-        self.status_var.set("Остановка...")
+        self.status_var.set("Остановка текущей пачки…")
         self.stop_btn.config(state='disabled')
 
     def _load_settings(self):
         s = load_settings()
+        legacy_api_key = s.pop("_legacy_api_key", "")
+        api_key = load_api_key()
+        if not api_key and legacy_api_key:
+            api_key = legacy_api_key
+            if store_api_key(legacy_api_key):
+                self.log_line("DeepL-ключ перенесён в системное хранилище учётных данных", 'info')
+            else:
+                self._secret_warning_shown = True
+                self.log_line(
+                    "Системное хранилище ключей недоступно: ключ будет сохранён только до закрытия программы",
+                    'warning',
+                )
+        if api_key:
+            self.api_key_var.set(api_key)
+        scrub_plaintext_api_keys()
+
         if s.get('src'): self.src_var.set(s['src'])
         if s.get('dst'): self.dst_var.set(s['dst'])
-        if s.get('api_key'): self.api_key_var.set(s['api_key'])
-        if s.get('engine'): self.engine_var.set(s['engine'])
+        if s.get('engine'):
+            saved_engine = "JavaSim" if s['engine'] == "JavaSim (Test)" else s['engine']
+            valid_engines = {"Google", "DeepL", "MyMemory"}
+            if JAVA_OK:
+                valid_engines.add("JavaSim")
+            if saved_engine not in valid_engines:
+                saved_engine = "Google"
+            self.engine_var.set(saved_engine)
         if s.get('lang'): self.lang_var.set(s['lang'])
         if s.get('semaphore'): self.semaphore_var.set(s['semaphore'])
         if s.get('skip') is not None: self.skip_var.set(s['skip'])
@@ -1147,11 +1489,22 @@ class App(tk.Tk):
             self.target_lang_cb.set(label)
         self._toggle_api_field()
 
-    def _on_close(self):
+    def _save_current_settings(self):
+        api_key = self.api_key_var.get().strip()
+        if api_key:
+            if not store_api_key(api_key) and not self._secret_warning_shown:
+                self._secret_warning_shown = True
+                self.log_line(
+                    "DeepL-ключ не сохранён: нет доступного системного хранилища; "
+                    "он останется только в памяти до закрытия программы",
+                    'warning',
+                )
+        else:
+            store_api_key("")
+        scrub_plaintext_api_keys()
         save_settings({
             'src': self.src_var.get(),
             'dst': self.dst_var.get(),
-            'api_key': self.api_key_var.get(),
             'engine': self.engine_var.get(),
             'lang': self.lang_var.get(),
             'target_lang': self._get_target_lang(),
@@ -1159,21 +1512,61 @@ class App(tk.Tk):
             'skip': self.skip_var.get(),
             'open': self.open_var.get(),
             'preview': self.preview_var.get(),
-            'java_jar': self.java_jar_var.get(),  # ➕
+            'java_jar': self.java_jar_var.get(),
         })
-        self._async_loop.call_soon_threadsafe(self._async_loop.stop)
+
+    def _on_close(self):
+        if self._closing:
+            return
+        if self._translation_thread and self._translation_thread.is_alive():
+            self._close_when_finished = True
+            self.stop()
+            self.status_var.set("Закрою окно после остановки перевода…")
+            return
+        self._finish_close()
+
+    def _finish_close(self):
+        if self._closing:
+            return
+        self._save_current_settings()
+        self._closing = True
+        try:
+            self._async_loop.call_soon_threadsafe(self._async_loop.stop)
+            self._loop_thread.join(timeout=1.0)
+            if not self._loop_thread.is_alive():
+                self._async_loop.close()
+        except (RuntimeError, AttributeError):
+            pass
         self.destroy()
+
+    def _translation_finished(self):
+        if self._closing:
+            return
+        self.start_btn.config(state='normal')
+        self.stop_btn.config(state='disabled')
+        if self._close_when_finished:
+            self._finish_close()
 
     def start(self):
         src = self.src_var.get().strip()
         dst = self.dst_var.get().strip()
+        engine = self.engine_var.get()
+        api_key = self.api_key_var.get()
         if not src or not dst:
             self.log_line("Укажи обе папки!", 'error')
             return
         if not os.path.isdir(src):
             self.log_line(f"Папка не найдена: {src}", 'error')
             return
-        if self.engine_var.get() == "DeepL" and not self.api_key_var.get():
+        if os.path.exists(dst) and not os.path.isdir(dst):
+            self.log_line(f"Путь назначения не является папкой: {dst}", 'error')
+            return
+        try:
+            validate_directory_relationships(src, dst)
+        except ValueError as error:
+            self.log_line(str(error), 'error')
+            return
+        if engine == "DeepL" and not api_key:
             self.log_line("Ошибка: нужен DeepL API Key!", 'error')
             return
 
@@ -1182,73 +1575,84 @@ class App(tk.Tk):
         self.stop_btn.config(state='normal')
         self.progress['value'] = 0
 
-        save_settings({
-            'src': src, 'dst': dst, 'api_key': self.api_key_var.get(),
-            'engine': self.engine_var.get(), 'lang': self.lang_var.get(),
+        config = {
+            'engine': engine,
+            'api_key': api_key,
+            'source_lang': self.lang_var.get(),
             'target_lang': self._get_target_lang(),
-            'semaphore': int(self.semaphore_var.get()),
-            'skip': self.skip_var.get(), 'open': self.open_var.get(),
+            'src': src,
+            'dst': dst,
+            'java_jar': self.java_jar_var.get().strip(),
+            'skip_translated': self.skip_var.get(),
             'preview': self.preview_var.get(),
-        })
+            'open_output': self.open_var.get(),
+            'concurrency': int(self.semaphore_var.get()),
+        }
+        self._save_current_settings()
 
-        threading.Thread(target=self.run_translation, daemon=True).start()
+        self._translation_thread = threading.Thread(
+            target=self.run_translation, args=(config,), daemon=True, name="TranslationWorker"
+        )
+        self._translation_thread.start()
 
-    def run_translation(self):
-        engine_name = self.engine_var.get()
-        source_ln = self.lang_var.get()
-        target_ln = self._get_target_lang()
-        key = self.api_key_var.get()
-        src = self.src_var.get()
-        dst = self.dst_var.get()
-        use_preview = self.preview_var.get()
+    def run_translation(self, config: Dict[str, Any]):
+        # Take a snapshot on Tk's thread in start(); the worker never reads Tk variables.
+        engine_name = config['engine']
+        source_ln = config['source_lang']
+        target_ln = config['target_lang']
+        key = config['api_key']
+        src = config['src']
+        dst = config['dst']
+        use_preview = config['preview']
+        skip_translated = config['skip_translated']
+        open_output = config['open_output']
+        jar_path = config['java_jar']
 
         global SEMAPHORE_LIMIT
-        SEMAPHORE_LIMIT = int(self.semaphore_var.get())
+        SEMAPHORE_LIMIT = config['concurrency']
 
         start_t = time.time()
         total_lines = 0
+        processed_files = 0
         errors = 0
-
-        self.log_line(f"Запуск... Движок: {engine_name} | {source_ln} → {target_ln} | Параллельность: {SEMAPHORE_LIMIT}", 'info')
+        self.log_line(
+            f"Запуск... Движок: {engine_name} | {source_ln} → {target_ln} | "
+            f"Параллельность: {SEMAPHORE_LIMIT}", 'info'
+        )
 
         try:
-            # --- Умный поиск JAR (для .exe и скрипта) ---
-            if hasattr(sys, '_MEIPASS'):
-                # Если запущен как .exe
-                base_dir = sys._MEIPASS
-            else:
-                # Если запущен как скрипт
-                base_dir = os.path.dirname(os.path.abspath(__file__))
-            
-            bundled_jar = os.path.join(base_dir, "hoi4_translator.jar")
-            
-            # FIX #1: Приоритет: Путь из GUI > Встроенный JAR > None
-            # Раньше else-ветка обнуляла jar_path когда пользователь задал путь вручную
-            jar_path = self.java_jar_var.get().strip()
+            validate_directory_relationships(src, dst)
             if not jar_path:
-                jar_path = bundled_jar if os.path.exists(bundled_jar) else None
-            translator = AsyncTranslator(engine_name, api_key=key, source_lang=source_ln, java_jar_path=jar_path)
-            
-            # Инициализируем aiohttp сессию и семафоры ОДИН раз для всех файлов
+                if hasattr(sys, '_MEIPASS'):
+                    base_dir = sys._MEIPASS
+                else:
+                    base_dir = os.path.dirname(os.path.abspath(__file__))
+                bundled_candidates = (
+                    os.path.join(base_dir, "hoi4_translator.jar"),
+                    os.path.join(base_dir, "HoI4Translator.jar"),
+                )
+                jar_path = next(
+                    (candidate for candidate in bundled_candidates if os.path.exists(candidate)),
+                    None,
+                )
+
+            translator = AsyncTranslator(
+                engine_name, api_key=key, source_lang=source_ln, java_jar_path=jar_path
+            )
             asyncio.run_coroutine_threadsafe(
-                translator.__aenter__(), 
-                self._async_loop
+                translator.__aenter__(), self._async_loop
             ).result()
 
             files = collect_yml_files(src)
             total_files = len(files)
-
             if total_files == 0:
                 self.log_line("Файлы .yml не найдены!", 'error')
-                self.status_var.set("Нет файлов")
-                self.start_btn.config(state='normal')
-                self.stop_btn.config(state='disabled')
+                self._post_ui(self.status_var.set, "Нет файлов")
                 return
 
-            self.progress['maximum'] = total_files
-            self.progress['value'] = 0
-            self.progress_lines['value'] = 0
-            self.progress_file_lbl.config(text=f"0/{total_files}")
+            self._post_ui(self.progress.configure, maximum=total_files, value=0)
+            self._post_ui(self.progress_lines.configure, maximum=1, value=0)
+            self._post_ui(self.progress_file_lbl.configure, text=f"0/{total_files}")
 
             for i, fp in enumerate(files):
                 if self._stop_event.is_set():
@@ -1256,127 +1660,127 @@ class App(tk.Tk):
                     break
 
                 rel = os.path.relpath(fp, src)
-                self.status_var.set(f"Файл {i+1}/{total_files}: {os.path.basename(fp)}")
+                self._post_ui(
+                    self.status_var.set, f"Файл {i+1}/{total_files}: {os.path.basename(fp)}"
+                )
                 self.log_line(f"[{i+1}/{total_files}] {rel}")
-                self.progress_file_lbl.config(text=f"{i+1}/{total_files}")
+                self._post_ui(self.progress_file_lbl.configure, text=f"{i+1}/{total_files}")
+                self._post_ui(self.progress_lines.configure, maximum=1, value=0)
+                self._post_ui(self.progress_lines_lbl.configure, text="0/?")
 
-                # Сбрасываем прогресс строк для нового файла
-                self.progress_lines['value'] = 0
-                self.progress_lines['maximum'] = 1
-                self.progress_lines_lbl.config(text="0/?")
+                dst_path = rename_dst(fp, src, dst, target_ln)
 
-                dst_path = rename_dst(fp, src, dst)
-
-                # --- Колбэк прогресса строк (улучшение 2) ---
-                # FIX #4: total_in_file заполняется реально из колбэка, аргумент убран как бесполезный
                 def make_line_cb():
                     def cb(done, total):
-                        self.progress_lines['maximum'] = total
-                        self.progress_lines['value'] = done
-                        self.progress_lines_lbl.config(text=f"{done}/{total}")
-                        self.update_idletasks()
+                        self._post_ui(self._update_line_progress, done, total)
                     return cb
 
-                # --- Колбэк предпросмотра (улучшение 7) ---
                 preview_cb = None
                 if use_preview:
-                    def make_preview_cb(fp_=fp, dst_path_=dst_path):
+                    def make_preview_cb(fp_=fp):
                         def cb(orig_vals, trans_vals, idxs, meta, out_lines, dst_path_arg):
-                            # Показываем окно предпросмотра (блокирующий вызов из потока)
                             result = {'approved': False, 'translations': list(trans_vals)}
                             done_evt = threading.Event()
 
                             def open_preview():
+                                if self._closing:
+                                    done_evt.set()
+                                    return
                                 PreviewWindow(
                                     self, fp_, orig_vals, trans_vals,
                                     on_accept=lambda edited: (
                                         result.update({'approved': True, 'translations': edited}),
                                         done_evt.set()
                                     ),
-                                    on_cancel=lambda: done_evt.set()
+                                    on_cancel=done_evt.set
                                 )
-                            self.after(0, open_preview)
+
+                            self._post_ui(open_preview)
                             done_evt.wait()
 
-                            if result['approved']:
+                            if result['approved'] and not self._stop_event.is_set():
                                 for line_idx, translated, (pfx, sfx) in zip(idxs, result['translations'], meta):
                                     out_lines[line_idx] = f'{pfx}"{translated}"{sfx}\n'
-                                with open(dst_path_arg, 'w', encoding='utf-8-sig') as f:
-                                    f.writelines(out_lines)
+                                atomic_write_lines(dst_path_arg, out_lines)
                             else:
                                 self.log_line("  — Предпросмотр отменён, файл не записан", 'warning')
                         return cb
                     preview_cb = make_preview_cb()
 
                 try:
-                    n = process_file_sync(
-                        fp, dst_path, translator,
-                        self.log_line, self.skip_var.get(),
-                        self._stop_event, self._async_loop,
-                        target_lang=target_ln,
-                        line_progress_cb=make_line_cb(),
-                        preview_cb=preview_cb,
+                    count = process_file_sync(
+                        fp, dst_path, translator, self.log_line, skip_translated,
+                        self._stop_event, self._async_loop, target_lang=target_ln,
+                        line_progress_cb=make_line_cb(), preview_cb=preview_cb,
                     )
-                    if n is None:
+                    processed_files = i + 1
+                    if count is None:
+                        if not self._stop_event.is_set():
+                            errors += 1
                         break
-                    total_lines += n
+                    total_lines += count
 
                     elapsed = time.time() - start_t
                     if elapsed > 0 and total_lines > 0:
-                        self.speed_var.set(f"{total_lines / elapsed:.1f} строк/сек")
-
-                    self.log_line(f"  ✓ строк: {n}", 'success')
+                        self._post_ui(
+                            self.speed_var.set, f"{total_lines / elapsed:.1f} строк/сек"
+                        )
+                    self.log_line(f"  ✓ строк: {count}", 'success')
                 except Exception as e:
                     self.log_line(f"  ОШИБКА: {e}", 'error')
-                    logger.exception(f"File error: {fp}")
+                    logger.exception("File error: %s", fp)
                     errors += 1
 
-                self.progress['value'] = i + 1
-                self.progress_file_lbl.config(text=f"{i+1}/{total_files}")
-                self.update_idletasks()
+                self._post_ui(self.progress.configure, value=i + 1)
+                self._post_ui(
+                    self.progress_file_lbl.configure, text=f"{i+1}/{total_files}"
+                )
 
             elapsed = int(time.time() - start_t)
-            m_, s_ = divmod(elapsed, 60)
-            summary = f"Готово! Файлов: {total_files} | строк: {total_lines} | {m_:02d}:{s_:02d}"
+            minutes, seconds = divmod(elapsed, 60)
+            state = "Остановлено" if self._stop_event.is_set() else "Готово"
+            summary = (
+                f"{state}! Файлов: {processed_files}/{total_files} | "
+                f"строк: {total_lines} | {minutes:02d}:{seconds:02d}"
+            )
             if errors:
                 summary += f" | ошибок: {errors}"
 
-            self.status_var.set(summary)
-            self.speed_var.set("")
+            self._post_ui(self.status_var.set, summary)
+            self._post_ui(self.speed_var.set, "")
             self.log_line("=" * 50, 'info')
-            self.log_line(f"  {summary}", 'success' if not errors else 'warning')
+            self.log_line(summary, 'success' if not errors else 'warning')
 
-            vr = translator.validation_report
-            self.log_line(f"  {vr.summary()}", 'info' if not vr.broken else 'warning')
-            if vr.broken:
+            validation = translator.validation_report
+            self.log_line(
+                validation.summary(), 'info' if not validation.broken else 'warning'
+            )
+            if validation.broken:
                 self.log_line(f"  Битые строки → {LOG_FILE}", 'warning')
-                for b in vr.broken:
-                    logger.warning(f"BROKEN [{b['file']}] {b['key']}: {b['issues']}")
-
+                for broken in validation.broken:
+                    logger.warning(
+                        "BROKEN [%s] %s: %s",
+                        broken['file'], broken['key'], broken['issues']
+                    )
             self.log_line("=" * 50, 'info')
 
-            if self.open_var.get() and not self._stop_event.is_set():
+            if open_output and not self._stop_event.is_set():
                 try:
                     os.startfile(dst)
                 except Exception:
                     pass
-
         except Exception as e:
             logger.exception("Critical error in translation thread")
             self.log_line(f"Критическая ошибка: {e}", 'error')
         finally:
-            # Закрываем ресурсы (БД, aiohttp сессию, JVM) после обработки всех файлов
             if 'translator' in locals():
                 try:
                     asyncio.run_coroutine_threadsafe(
-                        translator.__aexit__(None, None, None), 
-                        self._async_loop
+                        translator.__aexit__(None, None, None), self._async_loop
                     ).result()
-                except Exception as e:
-                    logger.error(f"Ошибка при закрытии ресурсов: {e}")
-
-            self.start_btn.config(state='normal')
-            self.stop_btn.config(state='disabled')
+                except Exception:
+                    logger.exception("Ошибка при закрытии ресурсов")
+            self._post_ui(self._translation_finished)
 
 # ---------------------------------------------------------------------------
 # УЛУЧШЕНИЕ 7: ОКНО ПРЕДПРОСМОТРА
@@ -1400,6 +1804,7 @@ class PreviewWindow(tk.Toplevel):
 
         self._on_accept = on_accept
         self._on_cancel = on_cancel
+        self._originals = originals
         self._entries: List[tk.StringVar] = []
 
         # Делаем модальным
@@ -1496,6 +1901,18 @@ class PreviewWindow(tk.Toplevel):
 
     def _accept(self):
         edited = [var.get() for var in self._entries]
+        issues = validate_preview_translations(self._originals, edited)
+        if issues:
+            shown_issues = issues[:15]
+            details = "\n".join(shown_issues)
+            if len(issues) > len(shown_issues):
+                details += f"\n… и ещё {len(issues) - len(shown_issues)} строк(и)"
+            messagebox.showerror(
+                "Нарушены игровые плейсхолдеры",
+                "Исправьте отмеченные строки перед сохранением:\n\n" + details,
+                parent=self,
+            )
+            return
         self.destroy()
         self._on_accept(edited)
 
