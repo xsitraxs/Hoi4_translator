@@ -1,138 +1,228 @@
 package com.hoi4.translator;
 
+import java.io.IOException;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Java-сервис перевода для HoI4.
- * Вызывается из Python через JPype.
- * Java 11+ совместим.
+ * Java service for HoI4 localization, called from Python through JPype.
+ * Compatible with Java 11+.
  */
 public class HoI4Translator {
 
-    // Маркеры, которые Python подставляет вместо $ключ$, [ключ], §X и т.д.
+    // The Python layer replaces Paradox tokens with markers before calling Java.
     private static final Pattern PH_PATTERN = Pattern.compile("<<PH\\d+>>");
 
-    // FIX #10: HttpClient создаётся один раз, а не на каждый вызов
-    private final java.net.http.HttpClient httpClient = java.net.http.HttpClient.newBuilder()
-            .connectTimeout(java.time.Duration.ofSeconds(8))
-            .followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
-            .build();
-
-    // FIX #9: надёжный regex для первого сегмента ответа Google вместо хрупкого indexOf+split
-    // Ответ: [[["Перевод","Оригинал",...],...],...] — берём только первое поле первого элемента
     private static final Pattern GOOGLE_SEG_RE = Pattern.compile(
             "\\[\"((?:[^\"\\\\]|\\\\.)*)\",\"(?:[^\"\\\\]|\\\\.)*\"");
 
-    // FIX #11: лимит длины текста для одного запроса (символов в исходном тексте)
+    // Keep requests small enough for the unofficial Google endpoint, but never truncate text.
     private static final int MAX_QUERY_CHARS = 400;
+    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(20);
+
+    private final HttpClient httpClient = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(8))
+            .followRedirects(HttpClient.Redirect.NORMAL)
+            .build();
 
     /**
-     * Основной метод, вызываемый из Python.
-     * @param text строка с защищёнными плейсхолдерами <<PH0>>, <<PH1>>...
-     * @param targetLang код целевого языка (ru, de, pl, etc.)
-     * @return переведённая строка с сохранёнными маркерами
+     * Translate a full phrase at once to preserve context and placeholder positions.
+     * Very long lines are split at sentence/word boundaries without dropping text.
      */
     public String translate(String text, String targetLang) {
-        if (text == null || text.isEmpty()) return text;
+        if (text == null || text.isEmpty()) {
+            return text;
+        }
+        if (targetLang == null || targetLang.isBlank()) {
+            throw new IllegalArgumentException("targetLang must not be empty");
+        }
 
-        List<String> segments = splitPreservingPlaceholders(text);
         StringBuilder result = new StringBuilder(text.length());
-
-        for (String segment : segments) {
-            if (PH_PATTERN.matcher(segment).matches()) {
-                // Плейсхолдер — не трогаем, иначе Python не восстановит $ключ$
-                result.append(segment);
-            } else {
-                // Переводим только "чистый" текст
-                result.append(translateSegment(segment, targetLang));
-            }
+        for (String chunk : splitLongText(text)) {
+            result.append(translateChunk(chunk, targetLang));
         }
         return result.toString();
     }
 
-    /** Разбивает текст на плейсхолдеры и обычные фрагменты */
-    private List<String> splitPreservingPlaceholders(String text) {
-        List<String> parts = new ArrayList<>();
-        Matcher m = PH_PATTERN.matcher(text);
-        int lastEnd = 0;
-        while (m.find()) {
-            if (m.start() > lastEnd) parts.add(text.substring(lastEnd, m.start()));
-            parts.add(m.group());
-            lastEnd = m.end();
+    private List<String> splitLongText(String text) {
+        List<String> chunks = new ArrayList<>();
+        int start = 0;
+
+        while (start < text.length()) {
+            int hardEnd = Math.min(start + MAX_QUERY_CHARS, text.length());
+            if (hardEnd == text.length()) {
+                chunks.add(text.substring(start));
+                break;
+            }
+
+            int safeEnd = hardEnd;
+            Matcher placeholders = PH_PATTERN.matcher(text);
+            while (placeholders.find()) {
+                if (placeholders.start() < hardEnd && placeholders.end() > hardEnd) {
+                    // Do not cut through a marker. Markers are shorter than the query limit.
+                    safeEnd = placeholders.start() > start ? placeholders.start() : placeholders.end();
+                    break;
+                }
+                if (placeholders.start() >= hardEnd) {
+                    break;
+                }
+            }
+
+            int sentenceBoundary = -1;
+            int wordBoundary = -1;
+            for (int i = safeEnd - 1; i > start; i--) {
+                if (!Character.isWhitespace(text.charAt(i))) {
+                    continue;
+                }
+                if (wordBoundary < 0) {
+                    wordBoundary = i + 1;
+                }
+                int previous = i - 1;
+                while (previous >= start && Character.isWhitespace(text.charAt(previous))) {
+                    previous--;
+                }
+                if (previous >= start && isSentenceTerminator(text.charAt(previous))) {
+                    sentenceBoundary = i + 1;
+                    break;
+                }
+            }
+
+            int end = sentenceBoundary > start ? sentenceBoundary
+                    : wordBoundary > start ? wordBoundary
+                    : safeEnd;
+
+            // Avoid splitting a UTF-16 surrogate pair.
+            if (end > start && end < text.length()
+                    && Character.isHighSurrogate(text.charAt(end - 1))
+                    && Character.isLowSurrogate(text.charAt(end))) {
+                end--;
+            }
+
+            // The selected natural boundary must also remain outside placeholder markers.
+            Matcher markerCheck = PH_PATTERN.matcher(text);
+            while (markerCheck.find()) {
+                if (markerCheck.start() < end && markerCheck.end() > end) {
+                    end = markerCheck.start() > start ? markerCheck.start() : markerCheck.end();
+                    break;
+                }
+                if (markerCheck.start() >= end) {
+                    break;
+                }
+            }
+
+            if (end <= start) {
+                // This can only happen for an unusually long marker; keep it whole.
+                end = safeEnd > start ? safeEnd : Math.min(start + MAX_QUERY_CHARS, text.length());
+            }
+            chunks.add(text.substring(start, end));
+            start = end;
         }
-        if (lastEnd < text.length()) parts.add(text.substring(lastEnd));
-        return parts;
+
+        return chunks;
     }
 
-    /**
-     * ЗДЕСЬ ЛОГИКА ПЕРЕВОДА.
-     * Сейчас стоит безопасная заглушка. Ниже в комментариях — готовый код для бесплатного API.
-     */
-    private String translateSegment(String text, String targetLang) {
-        String clean = text.trim();
-        if (clean.isEmpty()) return text;
+    private boolean isSentenceTerminator(char value) {
+        return ".!?。！？".indexOf(value) >= 0;
+    }
 
-        // ==========================================
-        // 🔵 GOOGLE TRANSLATE (неофициальный бесплатный эндпоинт)
-        // ==========================================
+    private String translateChunk(String text, String targetLang) {
+        int bodyStart = 0;
+        while (bodyStart < text.length() && Character.isWhitespace(text.charAt(bodyStart))) {
+            bodyStart++;
+        }
+        int bodyEnd = text.length();
+        while (bodyEnd > bodyStart && Character.isWhitespace(text.charAt(bodyEnd - 1))) {
+            bodyEnd--;
+        }
+        if (bodyStart == bodyEnd) {
+            return text;
+        }
 
-        // FIX #11: обрезаем слишком длинные строки — длинный URL вернёт ошибку
-        String query = clean.length() > MAX_QUERY_CHARS ? clean.substring(0, MAX_QUERY_CHARS) : clean;
+        String prefix = text.substring(0, bodyStart);
+        String body = text.substring(bodyStart, bodyEnd);
+        String suffix = text.substring(bodyEnd);
 
         try {
-            String encoded = java.net.URLEncoder.encode(query, java.nio.charset.StandardCharsets.UTF_8);
-            String url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=" +
-                    targetLang + "&dt=t&q=" + encoded;
+            String query = URLEncoder.encode(body, StandardCharsets.UTF_8);
+            String encodedTarget = URLEncoder.encode(targetLang, StandardCharsets.UTF_8);
+            String url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl="
+                    + encodedTarget + "&dt=t&q=" + query;
 
-            // FIX #10: используем общий httpClient, а не создаём новый на каждый вызов
-            java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
+            HttpRequest request = HttpRequest.newBuilder()
                     .uri(java.net.URI.create(url))
+                    .timeout(REQUEST_TIMEOUT)
                     .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
                     .header("Accept", "application/json")
                     .GET()
                     .build();
 
-            java.net.http.HttpResponse<String> resp = httpClient.send(req, java.net.http.HttpResponse.BodyHandlers.ofString());
-
-            if (resp.statusCode() == 200) {
-                String translated = parseGoogleResponse(resp.body());
-                if (!translated.isEmpty()) return translated;
+            HttpResponse<String> response = httpClient.send(
+                    request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (response.statusCode() != 200) {
+                throw new IOException("Google Translate returned HTTP " + response.statusCode());
             }
-        } catch (java.net.http.HttpTimeoutException e) {
-            System.err.println("[Java] Google Translate: timeout");
+
+            String translated = parseGoogleResponse(response.body());
+            if (translated.isEmpty()) {
+                throw new IOException("Google Translate returned an empty translation");
+            }
+            return prefix + translated + suffix;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Google Translate request was interrupted", e);
         } catch (Exception e) {
-            System.err.println("[Java] Google Translate error: " + e.getMessage());
+            throw new IllegalStateException("Google Translate request failed: " + e.getMessage(), e);
         }
-
-        // Фолбэк: возвращаем оригинал, чтобы не ломать пайплайн
-        return text;
     }
 
-    /** FIX #9: Парсит ответ Google API через regex — надёжнее чем indexOf+split.
-     *  Собирает все сегменты перевода из data[0][*][0]. */
+    /** Parse the translated text segments at data[0][*][0] from Google's JSON response. */
     private String parseGoogleResponse(String json) {
-        StringBuilder sb = new StringBuilder();
-        Matcher m = GOOGLE_SEG_RE.matcher(json);
-        while (m.find()) {
-            String seg = m.group(1);
-            // Восстанавливаем JSON-экранирование
-            seg = seg.replace("\\n", "\n")
-                    .replace("\\t", "\t")
-                    .replace("\\\"", "\"")
-                    .replace("\\\\", "\\");
-            sb.append(seg);
+        StringBuilder result = new StringBuilder();
+        Matcher matcher = GOOGLE_SEG_RE.matcher(json);
+        while (matcher.find()) {
+            result.append(decodeJsonString(matcher.group(1)));
         }
-        return sb.toString();
+        return result.toString();
     }
 
-    /** Тест из консоли */
-    public static void main(String[] args) {
-        HoI4Translator t = new HoI4Translator();
-        String test = "We must defend <<PH0>> and secure §Y$PROVINCE$§!.";
-        System.out.println("IN:  " + test);
-        System.out.println("OUT: " + t.translate(test, "ru"));
+    private String decodeJsonString(String value) {
+        StringBuilder decoded = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char current = value.charAt(i);
+            if (current != '\\' || i + 1 >= value.length()) {
+                decoded.append(current);
+                continue;
+            }
+
+            char escaped = value.charAt(++i);
+            switch (escaped) {
+                case '"': decoded.append('"'); break;
+                case '\\': decoded.append('\\'); break;
+                case '/': decoded.append('/'); break;
+                case 'b': decoded.append('\b'); break;
+                case 'f': decoded.append('\f'); break;
+                case 'n': decoded.append('\n'); break;
+                case 'r': decoded.append('\r'); break;
+                case 't': decoded.append('\t'); break;
+                case 'u':
+                    if (i + 4 >= value.length()) {
+                        throw new IllegalArgumentException("Invalid Unicode escape in JSON response");
+                    }
+                    decoded.append((char) Integer.parseInt(value.substring(i + 1, i + 5), 16));
+                    i += 4;
+                    break;
+                default:
+                    decoded.append(escaped);
+            }
+        }
+        return decoded.toString();
     }
 }
