@@ -186,6 +186,35 @@ class TargetLanguageTests(unittest.TestCase):
                 str(source), str(Path(directory) / "output")
             )
 
+    def test_output_path_collisions_are_rejected_before_processing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source_root = Path(directory) / "source"
+            destination_root = Path(directory) / "translated"
+            generic = source_root / "localisation" / "events.yml"
+            english = source_root / "localisation" / "events_l_english.yml"
+            outputs = [
+                (
+                    str(generic),
+                    translator_module.rename_dst(
+                        str(generic), str(source_root), str(destination_root), "pl"
+                    ),
+                ),
+                (
+                    str(english),
+                    translator_module.rename_dst(
+                        str(english), str(source_root), str(destination_root), "pl"
+                    ),
+                ),
+            ]
+
+            self.assertEqual(outputs[0][1], outputs[1][1])
+            with self.assertRaisesRegex(ValueError, "Коллизия выходных файлов"):
+                translator_module.validate_output_path_collisions(outputs)
+
+            translator_module.validate_output_path_collisions(
+                [(str(generic), outputs[0][1]), (str(english), str(destination_root / "other.yml"))]
+            )
+
     def test_atomic_write_leaves_previous_file_intact_on_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory) / "localisation.yml"
@@ -272,6 +301,26 @@ class TargetLanguageTests(unittest.TestCase):
             self.assertFalse(translator_module.store_api_key("secret"))
 
 
+class TranslationCacheTests(unittest.TestCase):
+    def test_cache_version_separates_new_entries_from_legacy_keys(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = translator_module.TranslationCache(
+                str(Path(directory) / "translations.sqlite3")
+            )
+            try:
+                cache.set("Hello", "Привет", "en", "ru", "Google")
+                self.assertEqual(cache.get("Hello", "en", "ru", "Google"), "Привет")
+
+                with patch.object(
+                    translator_module,
+                    "CACHE_FORMAT_VERSION",
+                    translator_module.CACHE_FORMAT_VERSION - 1,
+                ):
+                    self.assertIsNone(cache.get("Hello", "en", "ru", "Google"))
+            finally:
+                cache.close()
+
+
 class LocalizationSyntaxTests(unittest.TestCase):
     def test_game_tokens_are_protected_and_restored_byte_for_byte(self):
         original = r'Cost $$5: [$STATE$] §2army§! £GFX_army|1 \"quoted\" \n @TAG'
@@ -305,9 +354,32 @@ class LocalizationSyntaxTests(unittest.TestCase):
         self.assertIn("£GFX_icon|1", result)
         self.assertIn(r'\"quoted\"', result)
 
-    def test_postprocessor_handles_white_and_numeric_colour_codes(self):
-        result = translator_module.PostProcessor.process("§W text, §2 army§!", "")
-        self.assertEqual(result, "§WText, §2Army§!")
+    def test_postprocessor_preserves_colour_codes_and_neighbouring_case(self):
+        translated = "§W text, §2 army§!"
+        result = translator_module.PostProcessor.process(translated, "")
+        self.assertEqual(result, translated)
+
+    def test_postprocessor_uses_target_language_typography(self):
+        french = translator_module.PostProcessor.process(
+            'Il a dit "bonjour" !', "", target_lang="fr"
+        )
+        english = translator_module.PostProcessor.process(
+            'He said "hello" !', "", target_lang="en"
+        )
+
+        self.assertEqual(french, "Il a dit «\u202fbonjour\u202f»\u202f!")
+        self.assertEqual(english, "He said “hello”!")
+
+    def test_colour_markers_must_remain_balanced_and_in_order(self):
+        original = "§Ygold§! and §Rred§!"
+        reordered = "§Rred§! and §Ygold§!"
+        issues = translator_module.PlaceholderValidator.validate(original, reordered)
+        unclosed = translator_module.PlaceholderValidator.validate("§Ygold§!", "§Ygold")
+        malformed = translator_module.PlaceholderValidator.validate("value", "value § ")
+
+        self.assertTrue(any("порядок цветовых маркеров" in issue for issue in issues))
+        self.assertTrue(any("не закрыт" in issue for issue in unclosed))
+        self.assertTrue(any("некорректный знак §" in issue for issue in malformed))
 
     def test_postprocessor_does_not_hide_a_physical_newline_near_literal_escape(self):
         translated = "First line\n\\nSecond line"
@@ -348,7 +420,9 @@ class LocalizationSyntaxTests(unittest.TestCase):
 
 
 class FileProcessingTests(unittest.TestCase):
-    def _run_processor(self, source, destination, translator, target_lang="pl", skip=False):
+    def _run_processor(
+        self, source, destination, translator, target_lang="pl", skip=False, preview_cb=None
+    ):
         loop = asyncio.new_event_loop()
         loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
         loop_thread.start()
@@ -358,7 +432,7 @@ class FileProcessingTests(unittest.TestCase):
                 str(source), str(destination), translator,
                 lambda *entry: logs.append(entry),
                 skip_translated=skip, stop_event=threading.Event(), loop=loop,
-                target_lang=target_lang,
+                target_lang=target_lang, preview_cb=preview_cb,
             )
             return result, logs
         finally:
@@ -381,6 +455,77 @@ class FileProcessingTests(unittest.TestCase):
                 return [transform(text) for text in texts]
 
         return FakeTranslator()
+
+    def test_duplicate_localization_keys_reject_the_file_before_translation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source" / "events_l_english.yml"
+            destination = Path(directory) / "out" / "events_l_polish.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                'l_english:\n KEY:0 "Hello"\n KEY:0 "Hi"\n', encoding="utf-8-sig"
+            )
+            translated = []
+
+            result, logs = self._run_processor(
+                source,
+                destination,
+                self._translator(lambda value: translated.append(value) or value),
+            )
+
+            self.assertIsNone(result)
+            self.assertEqual(translated, [])
+            self.assertFalse(destination.exists())
+            self.assertTrue(any("повторяющиеся localization keys" in entry[0] for entry in logs))
+
+    def test_preview_cancellation_is_not_reported_as_a_successful_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source" / "events_l_english.yml"
+            destination = Path(directory) / "out" / "events_l_polish.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                'l_english:\n KEY:0 "Hello"\n', encoding="utf-8-sig"
+            )
+
+            result, logs = self._run_processor(
+                source,
+                destination,
+                self._translator(lambda _: "Cześć"),
+                preview_cb=lambda *_: False,
+            )
+
+            self.assertIs(result, translator_module.FileProcessStatus.PREVIEW_CANCELLED)
+            self.assertFalse(destination.exists())
+            self.assertTrue(any("Предпросмотр отменён" in entry[0] for entry in logs))
+
+    def test_approved_preview_must_confirm_its_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source" / "events_l_english.yml"
+            destination = Path(directory) / "out" / "events_l_polish.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                'l_english:\n KEY:0 "Hello"\n', encoding="utf-8-sig"
+            )
+
+            def approve_preview(originals, translations, indexes, metadata, lines, path):
+                for line_idx, translated, (prefix, suffix, ending) in zip(
+                    indexes, translations, metadata
+                ):
+                    lines[line_idx] = f'{prefix}"{translated}"{suffix}{ending}'
+                translator_module.atomic_write_lines(path, lines)
+                return True
+
+            result, _ = self._run_processor(
+                source,
+                destination,
+                self._translator(lambda _: "Cześć"),
+                preview_cb=approve_preview,
+            )
+
+            self.assertEqual(result, 1)
+            self.assertEqual(
+                destination.read_text(encoding="utf-8-sig"),
+                'l_polish:\n KEY:0 "Cześć"\n',
+            )
 
     def test_missing_header_is_added_and_bom_is_written(self):
         with tempfile.TemporaryDirectory() as directory:
