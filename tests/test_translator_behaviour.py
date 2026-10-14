@@ -79,23 +79,57 @@ class TargetLanguageTests(unittest.TestCase):
     def test_deepl_receives_brazilian_portuguese_target_code(self):
         captured = {}
 
-        class FakeDeepL:
-            def __init__(self, **kwargs):
-                captured.update(kwargs)
+        class FakeResult:
+            text = "translated:Hello"
 
-            def translate(self, text):
-                return f"translated:{text}"
+        class FakeDeepLClient:
+            def __init__(self, api_key):
+                captured["api_key"] = api_key
+
+            def translate_text(self, text, source_lang, target_lang):
+                captured.update(text=text, source_lang=source_lang, target_lang=target_lang)
+                return FakeResult()
 
         translator = object.__new__(translator_module.AsyncTranslator)
         translator.api_key = "test-key"
         translator.source_lang = "en"
-        with patch.object(translator_module, "DeepL", FakeDeepL, create=True):
+        fake_deepl = types.SimpleNamespace(DeepLClient=FakeDeepLClient)
+        with patch.object(translator_module, "deepl", fake_deepl, create=True):
             result = translator_module.AsyncTranslator._deepl_sync(
                 translator, "Hello", "pt", retries=1
             )
 
         self.assertEqual(result, "translated:Hello")
-        self.assertEqual(captured["target"], "PT-BR")
+        self.assertEqual(captured["api_key"], "test-key")
+        self.assertEqual(captured["source_lang"], "EN")
+        self.assertEqual(captured["target_lang"], "PT-BR")
+
+    def test_deepl_uses_provider_supported_simplified_chinese_codes(self):
+        captured = {}
+
+        class FakeResult:
+            text = "你好"
+
+        class FakeDeepLClient:
+            def __init__(self, api_key):
+                pass
+
+            def translate_text(self, text, source_lang, target_lang):
+                captured.update(source_lang=source_lang, target_lang=target_lang)
+                return FakeResult()
+
+        translator = object.__new__(translator_module.AsyncTranslator)
+        translator.api_key = "test-key"
+        translator.source_lang = "zh-CN"
+        fake_deepl = types.SimpleNamespace(DeepLClient=FakeDeepLClient)
+        with patch.object(translator_module, "deepl", fake_deepl, create=True):
+            result = translator_module.AsyncTranslator._deepl_sync(
+                translator, "你好", "zh-CN", retries=1
+            )
+
+        self.assertEqual(result, "你好")
+        self.assertEqual(captured["source_lang"], "ZH")
+        self.assertEqual(captured["target_lang"], "ZH-HANS")
 
     def test_target_language_is_applied_to_filename_and_language_directory(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -131,7 +165,7 @@ class TargetLanguageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "localisation_l_german.yml"
             path.write_text(
-                'l_german:\n KEY_ONE:0 "Guten Tag"\n KEY_TWO:0 "你好"\n EMPTY:0 ""\n',
+                'l_german:\n KEY_ONE:0 "Guten Tag"\n KEY_TWO:0 "你好"\n EMPTY:0 ""\n BAD:0 "junk" trailing\n',
                 encoding="utf-8-sig",
             )
 
@@ -274,6 +308,16 @@ class LocalizationSyntaxTests(unittest.TestCase):
     def test_postprocessor_handles_white_and_numeric_colour_codes(self):
         result = translator_module.PostProcessor.process("§W text, §2 army§!", "")
         self.assertEqual(result, "§WText, §2Army§!")
+
+    def test_postprocessor_does_not_hide_a_physical_newline_near_literal_escape(self):
+        translated = "First line\n\\nSecond line"
+        processed = translator_module.PostProcessor.process(translated, "")
+
+        self.assertIn("\n", processed)
+        issues = translator_module.validate_preview_translations(
+            ["First line"], [processed]
+        )
+        self.assertIn("одну физическую строку", issues[0])
 
     def test_localization_value_parser_handles_optional_version_escapes_and_comments(self):
         line = r'KEY-NAME: "He said: \"hello\"" # a comment with "quotes"'
@@ -461,6 +505,65 @@ class FileProcessingTests(unittest.TestCase):
             self.assertFalse(destination.exists())
             self.assertTrue(any("формату локализации" in entry[0] for entry in logs))
 
+    def test_single_language_header_mismatch_is_skipped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source" / "events_l_german.yml"
+            destination = Path(directory) / "out" / "events_l_polish.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                'l_german:\n KEY:0 "Guten Tag"\n', encoding="utf-8-sig"
+            )
+
+            result, logs = self._run_processor(
+                source, destination, self._translator(lambda text: "Cześć " + text)
+            )
+
+            self.assertIsNone(result)
+            self.assertFalse(destination.exists())
+            self.assertTrue(any(entry[1] == "error" for entry in logs))
+
+    def test_trailing_non_comment_junk_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source" / "events_l_english.yml"
+            destination = Path(directory) / "out" / "events_l_polish.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                'l_english:\n KEY:0 "Hello" unexpected\n', encoding="utf-8-sig"
+            )
+
+            result, logs = self._run_processor(
+                source, destination, self._translator(lambda text: "Cześć")
+            )
+
+            self.assertIsNone(result)
+            self.assertFalse(destination.exists())
+            self.assertTrue(any("формату локализации" in entry[0] for entry in logs))
+
+    def test_invalid_existing_translation_is_retranslated_not_skipped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source" / "events_l_english.yml"
+            destination = Path(directory) / "out" / "events_l_polish.yml"
+            source.parent.mkdir(parents=True)
+            destination.parent.mkdir(parents=True)
+            source.write_text(
+                'l_english:\n KEY:0 "Protect $STATE$"\n', encoding="utf-8-sig"
+            )
+            destination.write_text(
+                'l_polish:\n KEY:0 "Chroń państwo"\n', encoding="utf-8-sig"
+            )
+
+            result, logs = self._run_processor(
+                source, destination,
+                self._translator(lambda _: "Chroń $STATE$"), skip=True,
+            )
+
+            self.assertEqual(result, 1)
+            self.assertEqual(
+                destination.read_text(encoding="utf-8-sig"),
+                'l_polish:\n KEY:0 "Chroń $STATE$"\n',
+            )
+            self.assertTrue(any("отклонён" in entry[0] for entry in logs))
+
     def test_file_header_and_atomic_output_use_selected_language(self):
         with tempfile.TemporaryDirectory() as directory:
             source_root = Path(directory) / "source"
@@ -509,6 +612,30 @@ class FileProcessingTests(unittest.TestCase):
 
 
 class BrazilianPortugueseProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_google_429_raises_after_final_retry_instead_of_returning_source_text(self):
+        class FakeResponse:
+            status = 429
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class FakeSession:
+            def get(self, *_args, **_kwargs):
+                return FakeResponse()
+
+        translator = object.__new__(translator_module.AsyncTranslator)
+        translator.source_lang = "en"
+        translator.session = FakeSession()
+        fake_aiohttp = types.SimpleNamespace(ClientTimeout=lambda **kwargs: kwargs)
+        with patch.object(translator_module, "aiohttp", fake_aiohttp, create=True):
+            with self.assertRaisesRegex(RuntimeError, "rate-limited"):
+                await translator_module.AsyncTranslator._google_async(
+                    translator, "Hello", "ru", retries=1
+                )
+
     async def test_google_api_gets_the_brazilian_portuguese_variant(self):
         captured = {}
 
@@ -608,6 +735,63 @@ class CacheFallbackTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, "cached fallback")
         self.assertEqual(looked_up, ["Google", "MyMemory"])
+
+    async def test_invalid_cached_translation_is_ignored_and_replaced(self):
+        translator = object.__new__(translator_module.AsyncTranslator)
+        translator.engine = "Google"
+        translator.source_lang = "en"
+        translator._semaphore = asyncio.Semaphore(1)
+        translator.validation_report = translator_module.ValidationReport()
+
+        class FakeCache:
+            def __init__(self):
+                self.saved = []
+
+            def get(self, text, source, target, engine):
+                return "без маркера" if engine == "Google" else None
+
+            def set(self, *args):
+                self.saved.append(args)
+
+        translator.cache = FakeCache()
+
+        async def translate_valid(self, engine, protected, target, retries):
+            return "Защитите <<PH0>> сейчас"
+
+        translator._call_engine = types.MethodType(translate_valid, translator)
+        result = await translator_module.AsyncTranslator.translate_text_async(
+            translator, "Protect $STATE$ now", "ru"
+        )
+
+        self.assertEqual(result, "Защитите $STATE$ сейчас")
+        self.assertEqual(len(translator.cache.saved), 1)
+        self.assertEqual(translator.cache.saved[0][1], result)
+
+    async def test_all_provider_failures_raise_instead_of_saving_source_as_translation(self):
+        translator = object.__new__(translator_module.AsyncTranslator)
+        translator.engine = "Google"
+        translator.source_lang = "en"
+        translator._semaphore = asyncio.Semaphore(1)
+        translator.validation_report = translator_module.ValidationReport()
+        attempted = []
+
+        class FakeCache:
+            def get(self, *_args):
+                return None
+
+        translator.cache = FakeCache()
+
+        async def unavailable(self, engine, protected, target, retries):
+            attempted.append(engine)
+            raise RuntimeError("provider unavailable")
+
+        translator._call_engine = types.MethodType(unavailable, translator)
+        with self.assertRaises(translator_module.TranslationFailed):
+            await translator_module.AsyncTranslator.translate_text_async(
+                translator, "Hello world", "ru"
+            )
+
+        self.assertEqual(attempted, ["Google", "MyMemory"])
 
 
 class TranslationCancellationTests(unittest.IsolatedAsyncioTestCase):

@@ -24,10 +24,21 @@ except ImportError:
     ASYNC_OK = False
 
 try:
-    from deep_translator import GoogleTranslator, MyMemoryTranslator, DeepL
+    from deep_translator import GoogleTranslator, MyMemoryTranslator
     TRANSLATOR_OK = True
 except ImportError:
+    GoogleTranslator = None
+    MyMemoryTranslator = None
     TRANSLATOR_OK = False
+
+# deep-translator's DeepL wrapper still uses the retired GET/auth_key API.
+# Use DeepL's official client, which sends POST requests with Authorization.
+try:
+    import deepl
+    DEEPL_OK = True
+except ImportError:
+    deepl = None
+    DEEPL_OK = False
 
 # Попытка импорта JPype для Java-интеграции
 # FIX #8: jpype.types импортируется внутри try, иначе крэш при старте если jpype не установлен
@@ -151,6 +162,9 @@ PLACEHOLDER_RE = re.compile(
 VALUE_RE = re.compile(
     r'^(\s*[A-Za-z0-9_.-]+:\d*\s*)"((?:[^"\\]|\\.)*)"(.*)$'
 )
+# HOI4 permits trailing whitespace and line comments, but not arbitrary tokens
+# after the closing quote.
+VALUE_SUFFIX_RE = re.compile(r'^[ \t]*(?:#.*)?$')
 LANGUAGE_HEADER_RE = re.compile(r'^[ \t]*l_([A-Za-z0-9_]+):[ \t]*(?:#.*)?$', re.IGNORECASE)
 
 # Short translator code -> one of HOI4's built-in localization databases.
@@ -194,6 +208,10 @@ class TranslationCancelled(Exception):
     """Raised when the user stops the active file translation."""
 
 
+class TranslationFailed(Exception):
+    """Raised when every configured translation engine fails for a string."""
+
+
 # ---------------------------------------------------------------------------
 # 5. ПОСТОБРАБОТКА ПЕРЕВОДА
 # ---------------------------------------------------------------------------
@@ -209,7 +227,9 @@ class PostProcessor:
     _SPACE_AFTER_OPEN_QUOTE_RE = re.compile(r'«\s+')
     _SPACE_BEFORE_CLOSE_QUOTE_RE = re.compile(r'\s+»')
     _ENG_QUOTE_RE = re.compile(r'"([^"]+)"')
-    _SPACE_AROUND_NEWLINE_RE = re.compile(r'\s*\\n\s*')
+    # Only trim horizontal spaces around the literal HOI4 escape; \s would
+    # also consume physical CR/LF characters and hide a malformed translation.
+    _SPACE_AROUND_NEWLINE_RE = re.compile(r'[ \t]*\\n[ \t]*')
     # §W is a colour code, §! ends formatting. Numeric codes are gradients.
     _COLOR_CODE_RE = re.compile(r'(§[A-Za-z0-9])\s*([а-яёА-ЯЁa-zA-Z])')
     _LEFTOVER_PH_RE = re.compile(r'<<PH\d+>>')
@@ -582,6 +602,13 @@ class AsyncTranslator:
         for cached_engine in [self.engine] + FALLBACK_CHAIN.get(self.engine, []):
             cached = self.cache.get(text, self.source_lang, target_lang, cached_engine)
             if cached is not None:
+                cached_issues = validate_preview_translations([text], [cached])
+                if cached_issues:
+                    logger.warning(
+                        "Invalid cached translation ignored (%s): %s",
+                        cached_engine, "; ".join(cached_issues),
+                    )
+                    continue
                 logger.debug("Cache hit (%s): %s...", cached_engine, text[:30])
                 return cached
 
@@ -607,15 +634,18 @@ class AsyncTranslator:
                 except Exception as e:
                     logger.warning(f"Движок {eng} упал: {e}. Пробуем следующий...")
                     if eng == engines_to_try[-1]:
-                        # Все движки упали — возвращаем оригинал
+                        # Never write untranslated source text as if translation
+                        # succeeded; fail the file so the UI reports the outage.
                         logger.error(f"Все движки недоступны для: '{text[:40]}'")
-                        return text
+                        raise TranslationFailed(
+                            "Все доступные движки перевода завершились ошибкой"
+                        ) from e
 
         # Восстанавливаем плейсхолдеры
         final_text = restore_placeholders(result_text, tokens)
 
         # --- 6. ВАЛИДАЦИЯ ---
-        issues = PlaceholderValidator.validate(text, final_text)
+        issues = validate_preview_translations([text], [final_text])
         if issues:
             # A missing token cannot be safely relocated to the end of the
             # sentence. Leave it visible to validation/preview instead.
@@ -623,16 +653,16 @@ class AsyncTranslator:
 
         # --- 5. ПОСТОБРАБОТКА ---
         final_text = PostProcessor.process(final_text, text)
-        final_issues = PlaceholderValidator.validate(text, final_text)
+        final_issues = validate_preview_translations([text], [final_text])
+        issues = final_issues
         if final_issues:
             # Post-processing must not silently damage a token that was valid
             # immediately after translation/restoration.
-            issues = final_issues
-            logger.warning(f"Постобработка нарушила игровые маркеры [{_key_ctx}]: {final_issues}")
+            logger.warning(f"Постобработка нарушила формат [{_key_ctx}]: {final_issues}")
 
         self.validation_report.record(_file_ctx, _key_ctx, issues, auto_fixed=False)
 
-        if final_text and final_text != text:
+        if final_text and final_text != text and not issues:
             self.cache.set(text, final_text, self.source_lang, target_lang, used_engine)
 
         return final_text
@@ -641,7 +671,11 @@ class AsyncTranslator:
         """Вызов конкретного движка по имени."""
         if engine == "Google" and ASYNC_OK and self.session:
             return await self._google_async(protected, target, retries)
-        elif engine == "DeepL" and self.api_key:
+        elif engine == "DeepL":
+            if not self.api_key:
+                raise RuntimeError("DeepL API key is missing")
+            if not DEEPL_OK or deepl is None:
+                raise RuntimeError("Official DeepL client is not installed")
             return await asyncio.to_thread(self._deepl_sync, protected, target, retries)
         elif engine == "JavaSim":
             res = await asyncio.to_thread(
@@ -667,6 +701,10 @@ class AsyncTranslator:
                         data = await resp.json(content_type=None)
                         return ''.join([s[0] for s in data[0] if s and s[0]])
                     elif resp.status == 429:
+                        if attempt == retries - 1:
+                            raise RuntimeError(
+                                "Google Translate rate-limited the request after all retries"
+                            )
                         wait = (2 ** attempt) * 2.0
                         logger.warning(f"Rate limited (429). Ждём {wait:.1f}s...")
                         await asyncio.sleep(wait)
@@ -683,19 +721,31 @@ class AsyncTranslator:
                 await asyncio.sleep(1.0 * (attempt + 1))
         return text
 
+    @staticmethod
+    def _deepl_language_code(language: str, *, target: bool) -> str:
+        """Map app language codes to DeepL's API codes and variants."""
+        normalized = language.replace("_", "-").casefold()
+        if normalized in {"zh", "zh-cn", "zh-hans"}:
+            # Simplified Chinese is target-only as ZH-HANS; DeepL expects the
+            # unqualified ZH code when Chinese is the source language.
+            return "ZH-HANS" if target else "ZH"
+        if target and normalized in {"pt", "pt-br"}:
+            return "PT-BR"
+        return normalized.upper()
+
     def _deepl_sync(self, text: str, target: str, retries: int) -> str:
-        # HOI4's pt database is Brazilian Portuguese; DeepL distinguishes it
-        # from its default (European) Portuguese target.
-        deepl_target = "PT-BR" if target.casefold() == "pt" else target
-        translator = DeepL(
-            api_key=self.api_key, source=self.source_lang,
-            target=deepl_target, use_pro=False,
-        )
+        if deepl is None:
+            raise RuntimeError("Official DeepL client is not installed")
+        client = deepl.DeepLClient(self.api_key)
+        source_code = self._deepl_language_code(self.source_lang, target=False)
+        target_code = self._deepl_language_code(target, target=True)
         for attempt in range(retries):
             try:
-                res = translator.translate(text)
-                return res if res else text
-            except Exception as e:
+                result = client.translate_text(
+                    text, source_lang=source_code, target_lang=target_code
+                )
+                return result.text if result and result.text else text
+            except Exception:
                 if attempt < retries - 1:
                     time.sleep(1.5 * (attempt + 1))
                 else:
@@ -833,10 +883,12 @@ def _prepare_target_localisation_lines(lines, target_name, source_lang, log_cb):
         actual_source_name = distinct_languages[0]
         if selected_source_name != actual_source_name:
             log_cb(
-                f"  Предупреждение: заголовок файла l_{actual_source_name} не совпадает "
-                f"с выбранным исходным языком {source_lang!r}",
-                "warning",
+                f"  Файл пропущен: заголовок l_{actual_source_name} не совпадает "
+                f"с выбранным исходным языком {source_lang!r}; перевод из неверного "
+                "исходного языка небезопасен",
+                "error",
             )
+            return None
 
     if len(distinct_languages) > 1:
         source_name = selected_source_name
@@ -898,8 +950,12 @@ def load_existing_translations(dst_path: str) -> Dict[str, str]:
         with open(dst_path, 'r', encoding='utf-8-sig') as f:
             for line in f:
                 content, _ = _split_line_ending(line)
-                match = VALUE_RE.match(content)
-                if match and match.group(2).strip():
+                match = VALUE_RE.fullmatch(content)
+                if (
+                    match
+                    and VALUE_SUFFIX_RE.fullmatch(match.group(3))
+                    and match.group(2).strip()
+                ):
                     existing[match.group(1).strip()] = match.group(2)
     except Exception as e:
         logger.error(f"Error reading existing translations: {e}")
@@ -974,7 +1030,7 @@ def process_file_sync(
             continue
 
         line_content, line_ending = _split_line_ending(line)
-        match = VALUE_RE.match(line_content)
+        match = VALUE_RE.fullmatch(line_content)
         if not match:
             stripped = line_content.strip()
             if stripped and not stripped.startswith('#') and ':' in stripped:
@@ -982,16 +1038,28 @@ def process_file_sync(
             continue
 
         prefix, value, suffix = match.group(1), match.group(2), match.group(3)
+        if not VALUE_SUFFIX_RE.fullmatch(suffix):
+            malformed_lines.append(i + 1)
+            continue
         key = prefix.strip()
 
-        if skip_translated and key in existing:
-            out_lines[i] = f'{prefix}"{existing[key]}"{suffix}{line_ending}'
-            skipped += 1
-        else:
-            to_translate_idx.append(i)
-            to_translate_val.append(value)
-            to_translate_keys.append(key)
-            meta.append((prefix, suffix, line_ending))
+        existing_value = existing.get(key) if skip_translated else None
+        if existing_value is not None:
+            existing_issues = validate_preview_translations([value], [existing_value])
+            if not existing_issues:
+                out_lines[i] = f'{prefix}"{existing_value}"{suffix}{line_ending}'
+                skipped += 1
+                continue
+            log_cb(
+                f"  Сохранённый перевод [{key}] отклонён: "
+                f"{', '.join(existing_issues)}; строка будет переведена заново",
+                'warning',
+            )
+
+        to_translate_idx.append(i)
+        to_translate_val.append(value)
+        to_translate_keys.append(key)
+        meta.append((prefix, suffix, line_ending))
 
     if malformed_lines:
         rows = ", ".join(map(str, malformed_lines[:10]))
@@ -1387,7 +1455,9 @@ class App(tk.Tk):
         row1 = ttk.Frame(f_engine); row1.pack(fill='x')
         ttk.Label(row1, text="Движок:").pack(side='left')
         self.engine_var = tk.StringVar(value="Google")
-        engines = ["Google", "DeepL", "MyMemory"]
+        engines = ["Google", "MyMemory"]
+        if DEEPL_OK:
+            engines.insert(1, "DeepL")
         if JAVA_OK:
             engines.append("JavaSim")
 
@@ -1533,6 +1603,10 @@ class App(tk.Tk):
             self.api_status_var.set("Нет ключа")
             self.api_status_lbl.config(foreground='#ff6b6b')
             return
+        if not DEEPL_OK or deepl is None:
+            self.api_status_var.set("Нет клиента")
+            self.api_status_lbl.config(foreground='#ff6b6b')
+            return
 
         self.api_status_var.set("Проверка...")
         self.api_status_lbl.config(foreground='#ffa500')
@@ -1540,10 +1614,11 @@ class App(tk.Tk):
 
         def check():
             try:
-                from deep_translator import DeepL
-                translator = DeepL(api_key=api_key, source="en", target="ru", use_pro=False)
-                test_result = translator.translate("test")
-                if test_result:
+                client = deepl.DeepLClient(api_key)
+                test_result = client.translate_text(
+                    "test", source_lang="EN", target_lang="RU"
+                )
+                if test_result and test_result.text:
                     return True, "OK"
                 return False, "Ошибка ответа"
             except Exception as e:
@@ -1633,7 +1708,9 @@ class App(tk.Tk):
         if s.get('dst'): self.dst_var.set(s['dst'])
         if s.get('engine'):
             saved_engine = "JavaSim" if s['engine'] == "JavaSim (Test)" else s['engine']
-            valid_engines = {"Google", "DeepL", "MyMemory"}
+            valid_engines = {"Google", "MyMemory"}
+            if DEEPL_OK:
+                valid_engines.add("DeepL")
             if JAVA_OK:
                 valid_engines.add("JavaSim")
             if saved_engine not in valid_engines:
@@ -1738,6 +1815,9 @@ class App(tk.Tk):
             validate_directory_relationships(src, dst)
         except ValueError as error:
             self.log_line(str(error), 'error')
+            return
+        if engine == "DeepL" and not DEEPL_OK:
+            self.log_line("Ошибка: официальный клиент DeepL не установлен", 'error')
             return
         if engine == "DeepL" and not api_key:
             self.log_line("Ошибка: нужен DeepL API Key!", 'error')
@@ -1903,9 +1983,17 @@ class App(tk.Tk):
                     )
                     processed_files = i + 1
                     if count is None:
-                        if not self._stop_event.is_set():
-                            errors += 1
-                        break
+                        if self._stop_event.is_set():
+                            break
+                        errors += 1
+                        # A malformed/ambiguous file should not prevent the
+                        # remaining independent localization files from running.
+                        self._post_ui(self.progress.configure, value=i + 1)
+                        self._post_ui(
+                            self.progress_file_lbl.configure,
+                            text=f"{i+1}/{total_files}",
+                        )
+                        continue
                     total_lines += count
 
                     elapsed = time.time() - start_t
