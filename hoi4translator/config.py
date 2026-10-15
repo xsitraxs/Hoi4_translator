@@ -33,9 +33,13 @@ except ImportError:
 try:
     import deepl
     DEEPL_OK = True
-except ImportError:
+    DEEPL_IMPORT_ERROR = ""
+except ImportError as error:
     deepl = None
     DEEPL_OK = False
+    # The engine silently disappears from the list otherwise; the GUI shows
+    # this text so "no DeepL" can be diagnosed without a console.
+    DEEPL_IMPORT_ERROR = str(error)
 
 
 APP_NAME = "Hoi4Translator"

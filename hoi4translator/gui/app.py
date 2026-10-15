@@ -13,6 +13,7 @@ from .. import report as report_module
 from ..config import (
     ASYNC_OK,
     DB_FILE,
+    DEEPL_IMPORT_ERROR,
     DEEPL_OK,
     LOG_FILE,
     SEMAPHORE_LIMIT,
@@ -85,6 +86,13 @@ class App(tk.Tk):
 
         if not TRANSLATOR_OK:
             self.log_line("ВНИМАНИЕ: deep-translator не найден. pip install deep-translator", 'error')
+        if not DEEPL_OK:
+            # The engine is not offered at all when the client is missing, so
+            # the reason has to be visible somewhere.
+            detail = f" ({DEEPL_IMPORT_ERROR})" if DEEPL_IMPORT_ERROR else ""
+            self.log_line(
+                "Движок DeepL недоступен: pip install deepl" + detail, 'warning'
+            )
         if ASYNC_OK:
             self.log_line("Режим ускорения: AIOHTTP активен ✓", 'success')
         else:
@@ -682,7 +690,11 @@ class App(tk.Tk):
         """
         if engine == "DeepL":
             if not DEEPL_OK:
-                self.log_line("DeepL недоступен: установите deepl (pip install deepl)", 'error')
+                detail = f" ({DEEPL_IMPORT_ERROR})" if DEEPL_IMPORT_ERROR else ""
+                self.log_line(
+                    "DeepL недоступен: установите deepl (pip install deepl)" + detail,
+                    'error',
+                )
                 return False
             return True
         if engine == "JavaSim":

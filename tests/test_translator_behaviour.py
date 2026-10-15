@@ -1702,6 +1702,27 @@ class RunReportTests(unittest.TestCase):
             )
 
 
+class OptionalDependencyTests(unittest.TestCase):
+    """A missing engine must be explained, not silently dropped from the list."""
+
+    def test_deepl_capability_matches_the_optional_import(self):
+        import importlib
+
+        config = importlib.import_module("hoi4translator.config")
+        try:
+            importlib.import_module("deepl")
+            available = True
+        except ImportError:
+            available = False
+
+        self.assertEqual(config.DEEPL_OK, available)
+        self.assertEqual(bool(config.DEEPL_IMPORT_ERROR), not available)
+        if available:
+            self.assertIs(config.deepl, importlib.import_module("deepl"))
+        else:
+            self.assertIsNone(config.deepl)
+
+
 class EntryPointTests(unittest.TestCase):
     """The CLI switches let CI smoke-test the built EXE without a display."""
 
