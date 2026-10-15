@@ -6,8 +6,10 @@ import threading
 import time
 import tkinter as tk
 from datetime import datetime
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox
 from typing import Any, Dict, List, Optional
+
+import customtkinter as ctk
 
 from .. import report as report_module
 from ..config import (
@@ -69,7 +71,7 @@ def _enable_dpi_awareness() -> None:
         pass
 
 
-class App(tk.Tk):
+class App(ctk.CTk):
     WINDOW_WIDTH = 1000
     WINDOW_HEIGHT = 820
 
@@ -104,6 +106,7 @@ class App(tk.Tk):
         saved_settings = load_settings()
         self._theme_name = str(saved_settings.get("theme") or theme.DEFAULT_THEME)
         self._palette = theme.resolve(self._theme_name)
+        theme.install_theme()
         self._apply_theme()
         self._build_ui()
         self._load_settings(saved_settings)
@@ -169,7 +172,7 @@ class App(tk.Tk):
 
     def _apply_theme(self) -> None:
         """Apply the current palette. Safe to call again after a switch."""
-        theme.apply_style(self, self._palette)
+        theme.apply(self, self._palette)
         self._refresh_log_colors()
 
     def _refresh_log_colors(self) -> None:
@@ -179,9 +182,8 @@ class App(tk.Tk):
         for tag, colour in theme.log_tag_colors(self._palette).items():
             log_widget.tag_config(tag, foreground=colour)
         log_widget.configure(
-            background=self._palette.log_bg,
-            foreground=self._palette.log_fg,
-            insertbackground=self._palette.fg,
+            fg_color=self._palette.log_bg,
+            text_color=self._palette.log_fg,
         )
 
     def _update_theme_button(self) -> None:
@@ -215,262 +217,324 @@ class App(tk.Tk):
             self.log_line(f"📦 Выбран JAR: {os.path.basename(f)}", 'info')
 
     def _build_ui(self):
-        # --- шапка ---
-        header = ttk.Frame(self, style='Header.TFrame', padding=(15, 10))
-        header.pack(fill='x')
-        ttk.Label(header, text="Hoi4 Translator", style='Header.Title.TLabel').pack(side='left')
-        ttk.Label(
-            header, text=f"v{__version__}", style='Header.Subtitle.TLabel'
-        ).pack(side='left', padx=(8, 0), pady=(8, 0))
-        ttk.Label(
-            header, text="· перевод локализации Hearts of Iron IV",
-            style='Header.Subtitle.TLabel',
-        ).pack(side='left', padx=(6, 0), pady=(8, 0))
-        self.theme_btn = ttk.Button(
-            header, style='Header.Tool.TButton', command=self._toggle_theme
-        )
-        self.theme_btn.pack(side='right')
-        self._update_theme_button()
-        ttk.Separator(self).pack(fill='x')
+        p = self._palette
 
-        body = ttk.Frame(self, padding=15)
-        body.pack(fill='both', expand=True)
+        def card(parent, title):
+            """A titled panel: CustomTkinter has no label frame."""
+            frame = ctk.CTkFrame(parent, corner_radius=10)
+            frame.pack(fill='x', pady=(0, 10))
+            ctk.CTkLabel(
+                frame, text=title, font=theme.font(13, "bold"),
+                text_color=p.accent, anchor='w',
+            ).pack(fill='x', padx=16, pady=(12, 4))
+            inner = ctk.CTkFrame(frame, fg_color='transparent')
+            inner.pack(fill='both', expand=True, padx=16, pady=(0, 14))
+            return frame, inner
+
+        # --- шапка ---
+        header = ctk.CTkFrame(self, corner_radius=0, fg_color=p.panel, height=62)
+        header.pack(fill='x')
+        ctk.CTkLabel(
+            header, text="Hoi4 Translator", font=theme.font(21, "bold"),
+            text_color=p.accent,
+        ).pack(side='left', padx=(20, 10), pady=14)
+        ctk.CTkLabel(
+            header,
+            text=f"v{__version__}  ·  перевод локализации Hearts of Iron IV",
+            font=theme.font(12), text_color=p.fg_subtle,
+        ).pack(side='left', pady=(18, 0))
+        self.theme_btn = ctk.CTkButton(
+            header, text="", width=132, height=32, corner_radius=8,
+            fg_color=p.panel_alt, hover_color=p.border, text_color=p.fg,
+            font=theme.font(12), command=self._toggle_theme,
+        )
+        self.theme_btn.pack(side='right', padx=20)
+        self._update_theme_button()
+
+        # --- статус-бар (внизу) ---
+        status_bar = ctk.CTkFrame(self, corner_radius=0, fg_color=p.panel, height=34)
+        status_bar.pack(fill='x', side='bottom')
+        self.status_var = tk.StringVar(value="Готов к работе")
+        self.speed_var = tk.StringVar(value="")
+        ctk.CTkLabel(
+            status_bar, textvariable=self.status_var, font=theme.font(12),
+            text_color=p.fg_muted, anchor='w',
+        ).pack(side='left', padx=18, pady=6)
+        ctk.CTkLabel(
+            status_bar, textvariable=self.speed_var, font=theme.font(12),
+            text_color=p.success, anchor='e',
+        ).pack(side='right', padx=18, pady=6)
+
+        # --- кнопки ---
+        fb = ctk.CTkFrame(self, fg_color='transparent')
+        fb.pack(fill='x', side='bottom', padx=16, pady=(0, 12))
+        self.start_btn = ctk.CTkButton(
+            fb, text="▶ НАЧАТЬ ПЕРЕВОД", height=40, corner_radius=8,
+            fg_color=p.accent, hover_color=p.accent_hover, text_color=p.on_accent,
+            font=theme.font(13, "bold"), command=self.start,
+        )
+        self.start_btn.pack(side='left', fill='x', expand=True, padx=(0, 6))
+        self.stop_btn = ctk.CTkButton(
+            fb, text="■ СТОП", height=40, corner_radius=8, state='disabled',
+            fg_color=p.panel_alt, hover_color=p.error, text_color=p.error,
+            font=theme.font(13, "bold"), command=self.stop,
+        )
+        self.stop_btn.pack(side='left', fill='x', expand=True, padx=6)
+        ctk.CTkButton(
+            fb, text="Очистить лог", height=40, width=150, corner_radius=8,
+            fg_color=p.panel_alt, hover_color=p.border, font=theme.font(12),
+            command=self.clear_log,
+        ).pack(side='left', fill='x', expand=True, padx=(6, 0))
+
+        # --- тело ---
+        body = ctk.CTkFrame(self, fg_color='transparent')
+        body.pack(fill='both', expand=True, padx=16, pady=14)
 
         # --- Папки ---
-        f_folders = ttk.LabelFrame(body, text=" Папки ", padding=10)
-        f_folders.pack(fill='x', pady=(0, 8))
-        f_folders.columnconfigure(1, weight=1)
-
+        _, folders = card(body, "Папки")
+        folders.grid_columnconfigure(1, weight=1)
         self.src_var = tk.StringVar()
-        ttk.Label(f_folders, text="Оригинал:", width=12).grid(row=0, column=0, sticky='w')
-        ttk.Entry(f_folders, textvariable=self.src_var).grid(
-            row=0, column=1, sticky='ew', padx=6, pady=3
+        ctk.CTkLabel(folders, text="Оригинал:", width=112, anchor='w').grid(
+            row=0, column=0, sticky='w', pady=4
         )
-        ttk.Button(
-            f_folders, text="Обзор", command=self.browse_src, width=9, style='Tool.TButton'
-        ).grid(row=0, column=2, pady=3)
+        ctk.CTkEntry(
+            folders, textvariable=self.src_var,
+            placeholder_text="корень мода или папка localisation",
+        ).grid(row=0, column=1, sticky='ew', padx=8, pady=4)
+        ctk.CTkButton(
+            folders, text="Обзор", width=92, command=self.browse_src
+        ).grid(row=0, column=2, pady=4)
 
         self.dst_var = tk.StringVar()
-        ttk.Label(f_folders, text="Перевод:", width=12).grid(row=1, column=0, sticky='w')
-        ttk.Entry(f_folders, textvariable=self.dst_var).grid(
-            row=1, column=1, sticky='ew', padx=6, pady=3
+        ctk.CTkLabel(folders, text="Перевод:", width=112, anchor='w').grid(
+            row=1, column=0, sticky='w', pady=4
         )
-        ttk.Button(
-            f_folders, text="Обзор", command=self.browse_dst, width=9, style='Tool.TButton'
-        ).grid(row=1, column=2, pady=3)
+        ctk.CTkEntry(
+            folders, textvariable=self.dst_var,
+            placeholder_text="куда писать переведённые файлы",
+        ).grid(row=1, column=1, sticky='ew', padx=8, pady=4)
+        ctk.CTkButton(
+            folders, text="Обзор", width=92, command=self.browse_dst
+        ).grid(row=1, column=2, pady=4)
 
         # --- Движок и языки ---
-        f_engine = ttk.LabelFrame(body, text=" Движок и языки ", padding=10)
-        f_engine.pack(fill='x', pady=(0, 8))
+        _, engine = card(body, "Движок и языки")
+        engine.grid_columnconfigure(1, weight=1)
 
-        row_jar = ttk.Frame(f_engine)
-        row_jar.pack(fill='x', pady=(0, 6))
-        ttk.Label(row_jar, text="Движок:", width=12).pack(side='left')
         self.engine_var = tk.StringVar(value="Google")
         engines = ["Google", "MyMemory"]
         if DEEPL_OK:
             engines.insert(1, "DeepL")
         if JAVA_OK:
             engines.append("JavaSim")
-
-        self.engine_cb = ttk.Combobox(
-            row_jar, textvariable=self.engine_var, values=engines,
-            state="readonly", width=15,
+        ctk.CTkLabel(engine, text="Движок:", width=112, anchor='w').grid(
+            row=0, column=0, sticky='w', pady=4
         )
-        self.engine_cb.pack(side='left', padx=(0, 14))
-        self.engine_cb.bind("<<ComboboxSelected>>", self._toggle_api_field)
+        self.engine_cb = ctk.CTkComboBox(
+            engine, values=engines, variable=self.engine_var, width=168,
+            state="readonly", command=lambda _value: self._toggle_api_field(),
+        )
+        self.engine_cb.grid(row=0, column=1, sticky='w', padx=8, pady=4)
 
         # --- УЛУЧШЕНИЕ 3: Исходный и целевой язык ---
-        ttk.Label(row_jar, text="С языка:").pack(side='left')
+        languages = ctk.CTkFrame(engine, fg_color='transparent')
+        languages.grid(row=1, column=1, columnspan=2, sticky='w', padx=8, pady=4)
+        ctk.CTkLabel(languages, text="С языка:").pack(side='left')
         self.lang_var = tk.StringVar(value="en")
-        ttk.Combobox(
-            row_jar, textvariable=self.lang_var,
+        ctk.CTkComboBox(
+            languages, variable=self.lang_var,
             values=["en", "de", "fr", "es", "pl", "pt", "ru", "it", "ja", "zh-CN", "ko"],
-            state="readonly", width=7,
-        ).pack(side='left', padx=5)
+            state="readonly", width=92,
+        ).pack(side='left', padx=6)
 
-        ttk.Label(row_jar, text="→  На язык:").pack(side='left', padx=(10, 0))
+        ctk.CTkLabel(languages, text="→  На язык:").pack(side='left', padx=(14, 0))
         self.target_lang_var = tk.StringVar(value="ru")
         self._target_lang_map = {label: code for code, label in HOI4_TARGET_LANGS}
         self._target_lang_rev = dict(HOI4_TARGET_LANGS)
-        self.target_lang_cb = ttk.Combobox(
-            row_jar, values=[label for _, label in HOI4_TARGET_LANGS],
-            state="readonly", width=23,
+        self.target_lang_cb = ctk.CTkComboBox(
+            languages, values=[label for _, label in HOI4_TARGET_LANGS],
+            state="readonly", width=210, command=self._on_target_lang_change,
         )
         self.target_lang_cb.set(self._target_lang_rev["ru"])
-        self.target_lang_cb.pack(side='left', padx=5)
-        self.target_lang_cb.bind("<<ComboboxSelected>>", self._on_target_lang_change)
+        self.target_lang_cb.pack(side='left', padx=6)
 
-        row_jar2 = ttk.Frame(f_engine)
-        row_jar2.pack(fill='x', pady=(0, 6))
-        ttk.Label(row_jar2, text="Java JAR:", width=12).pack(side='left')
         self.java_jar_var = tk.StringVar(value="")
-        ttk.Entry(row_jar2, textvariable=self.java_jar_var).pack(
-            side='left', fill='x', expand=True, padx=6
+        ctk.CTkLabel(engine, text="Java JAR:", width=112, anchor='w').grid(
+            row=2, column=0, sticky='w', pady=4
         )
-        ttk.Button(
-            row_jar2, text="Обзор", command=self.browse_jar, width=9, style='Tool.TButton'
-        ).pack(side='left')
+        ctk.CTkEntry(
+            engine, textvariable=self.java_jar_var,
+            placeholder_text="необязательно: путь к HoI4Translator.jar",
+        ).grid(row=2, column=1, sticky='ew', padx=8, pady=4)
+        ctk.CTkButton(
+            engine, text="Обзор", width=92, command=self.browse_jar
+        ).grid(row=2, column=2, pady=4)
 
-        row_api = ttk.Frame(f_engine)
-        row_api.pack(fill='x')
-        self.api_lbl = ttk.Label(row_api, text="DeepL API Key:", width=12, style='Subtle.TLabel')
-        self.api_lbl.pack(side='left')
-        self.api_key_var = tk.StringVar()
-        self.api_entry = ttk.Entry(
-            row_api, textvariable=self.api_key_var, show="*", width=40, state='disabled'
+        self.api_lbl = ctk.CTkLabel(
+            engine, text="DeepL API Key:", width=112, anchor='w',
+            text_color=p.fg_subtle,
         )
-        self.api_entry.pack(side='left', padx=6)
-        self.verify_btn = ttk.Button(
-            row_api, text="Проверить API", command=self.verify_deepl_api,
-            state='disabled', width=13, style='Tool.TButton',
+        self.api_lbl.grid(row=3, column=0, sticky='w', pady=4)
+        self.api_key_var = tk.StringVar()
+        self.api_entry = ctk.CTkEntry(
+            engine, textvariable=self.api_key_var, show="*", state='disabled',
+            placeholder_text="ключ хранится в системном хранилище",
+        )
+        self.api_entry.grid(row=3, column=1, sticky='ew', padx=8, pady=4)
+        api_actions = ctk.CTkFrame(engine, fg_color='transparent')
+        api_actions.grid(row=3, column=2, sticky='w', pady=4)
+        self.verify_btn = ctk.CTkButton(
+            api_actions, text="Проверить", width=92, state='disabled',
+            font=theme.font(12), command=self.verify_deepl_api,
         )
         self.verify_btn.pack(side='left')
         self.api_status_var = tk.StringVar(value="")
-        self.api_status_lbl = ttk.Label(
-            row_api, textvariable=self.api_status_var, style='Muted.TLabel', width=15
+        self.api_status_lbl = ctk.CTkLabel(
+            api_actions, textvariable=self.api_status_var, width=96,
+            font=theme.font(12), text_color=p.fg_muted,
         )
-        self.api_status_lbl.pack(side='left', padx=6)
+        self.api_status_lbl.pack(side='left', padx=8)
 
-        # Параллельность
-        row_par = ttk.Frame(f_engine)
-        row_par.pack(fill='x', pady=(6, 0))
-        ttk.Label(row_par, text="Параллельность:", width=12).pack(side='left')
+        ctk.CTkLabel(engine, text="Параллельность:", width=112, anchor='w').grid(
+            row=4, column=0, sticky='w', pady=4
+        )
+        parallelism = ctk.CTkFrame(engine, fg_color='transparent')
+        parallelism.grid(row=4, column=1, columnspan=2, sticky='ew', padx=8, pady=4)
         self.semaphore_var = tk.IntVar(value=SEMAPHORE_LIMIT)
-        self.sem_lbl = ttk.Label(
-            row_par, text=str(SEMAPHORE_LIMIT), width=3, style='Muted.TLabel'
+        self.sem_lbl = ctk.CTkLabel(
+            parallelism, text=str(SEMAPHORE_LIMIT), width=34, font=theme.font(12),
+            text_color=p.fg_muted,
         )
         self.sem_lbl.pack(side='right')
-        ttk.Scale(
-            row_par, from_=1, to=50, variable=self.semaphore_var,
-            command=lambda v: self.sem_lbl.config(text=str(int(float(v)))),
-        ).pack(side='left', fill='x', expand=True, padx=6)
+        ctk.CTkSlider(
+            parallelism, from_=1, to=50, number_of_steps=49,
+            variable=self.semaphore_var, width=220,
+            command=lambda value: self.sem_lbl.configure(text=str(int(value))),
+        ).pack(side='left', fill='x', expand=True)
 
-        ttk.Separator(body).pack(fill='x', pady=(8, 8))
-
-        # --- Опции ---
-        of = ttk.Frame(body)
-        of.pack(fill='x', pady=(0, 4))
+        # --- Параметры ---
+        _, options = card(body, "Параметры")
+        checks = ctk.CTkFrame(options, fg_color='transparent')
+        checks.pack(fill='x')
         self.skip_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(of, text="Пропускать переведённое", variable=self.skip_var).pack(side='left')
+        ctk.CTkCheckBox(
+            checks, text="Пропускать переведённое", variable=self.skip_var
+        ).pack(side='left')
         self.open_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(of, text="Открыть папку по итогу", variable=self.open_var).pack(
-            side='left', padx=15
-        )
+        ctk.CTkCheckBox(
+            checks, text="Открыть папку по итогу", variable=self.open_var
+        ).pack(side='left', padx=18)
         # --- УЛУЧШЕНИЕ 7: галочка предпросмотра ---
         self.preview_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            of, text="Предпросмотр перед записью", variable=self.preview_var
+        ctk.CTkCheckBox(
+            checks, text="Предпросмотр перед записью", variable=self.preview_var
         ).pack(side='left')
 
-        # Кэш инфо
+        cache_row = ctk.CTkFrame(options, fg_color='transparent')
+        cache_row.pack(fill='x', pady=(10, 0))
         self.cache_info_var = tk.StringVar(value="")
-        ttk.Label(of, textvariable=self.cache_info_var, style='Info.TLabel').pack(side='right')
-        ttk.Button(
-            of, text="Инфо кэша", command=self._show_cache_info, width=11, style='Tool.TButton'
-        ).pack(side='right', padx=5)
-        ttk.Button(
-            of, text="Очистить кэш", command=self._clear_cache, width=13, style='Tool.TButton'
-        ).pack(side='right', padx=5)
+        ctk.CTkLabel(
+            cache_row, textvariable=self.cache_info_var, font=theme.font(12),
+            text_color=p.info,
+        ).pack(side='right')
+        ctk.CTkButton(
+            cache_row, text="Инфо кэша", width=110, font=theme.font(12),
+            command=self._show_cache_info,
+        ).pack(side='right', padx=6)
+        ctk.CTkButton(
+            cache_row, text="Очистить кэш", width=120, font=theme.font(12),
+            command=self._clear_cache,
+        ).pack(side='right')
 
-        # --- Битые строки + отчёт ---
-        of_report = ttk.Frame(body)
-        of_report.pack(fill='x', pady=(2, 4))
-        ttk.Label(of_report, text="Битые строки:", width=12).pack(side='left')
+        # --- Битые строки и отчёт ---
+        _, problems = card(body, "Битые строки и отчёт")
+        broken_row = ctk.CTkFrame(problems, fg_color='transparent')
+        broken_row.pack(fill='x')
+        ctk.CTkLabel(broken_row, text="Режим:", width=112, anchor='w').pack(side='left')
         self.broken_line_var = tk.StringVar(
             value=broken_line_label(_BROKEN_LINE_DEFAULT)
         )
-        ttk.Combobox(
-            of_report, textvariable=self.broken_line_var,
+        ctk.CTkComboBox(
+            broken_row, variable=self.broken_line_var,
             values=[label for _, label in BROKEN_LINE_MODES],
-            state="readonly", width=26,
-        ).pack(side='left', padx=6)
-        ttk.Button(
-            of_report, text="Открыть отчёт", command=self.open_last_report,
-            width=15, style='Tool.TButton',
+            state="readonly", width=300,
+        ).pack(side='left', padx=8)
+
+        report_row = ctk.CTkFrame(problems, fg_color='transparent')
+        report_row.pack(fill='x', pady=(10, 0))
+        ctk.CTkButton(
+            report_row, text="Открыть отчёт", width=120, font=theme.font(12),
+            command=self.open_last_report,
         ).pack(side='right')
         self.report_info_var = tk.StringVar(value="")
-        ttk.Label(of_report, textvariable=self.report_info_var, style='Info.TLabel').pack(
-            side='right', padx=6
-        )
+        ctk.CTkLabel(
+            report_row, textvariable=self.report_info_var, font=theme.font(12),
+            text_color=p.info,
+        ).pack(side='right', padx=10)
+        ctk.CTkLabel(
+            report_row, text="Отчёт о прогоне (json/csv) — рядом с папкой перевода",
+            font=theme.font(12), text_color=p.fg_subtle,
+        ).pack(side='left')
 
-        # Кэш других движков: экономит трафик, но мешает сменить движок
-        of2 = ttk.Frame(body)
-        of2.pack(fill='x', pady=(0, 4))
         self.reuse_fallback_cache_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            of2,
+        ctk.CTkCheckBox(
+            problems,
             text="Экономить трафик: переиспользовать кэш других движков "
                  "(иначе смена движка переводит заново)",
             variable=self.reuse_fallback_cache_var,
+        ).pack(anchor='w', pady=(10, 0))
+
+        # --- Прогресс ---
+        _, progress_card = card(body, "Прогресс")
+
+        files_row = ctk.CTkFrame(progress_card, fg_color='transparent')
+        files_row.pack(fill='x', pady=4)
+        ctk.CTkLabel(
+            files_row, text="Файлы:", width=112, anchor='w', font=theme.font(12),
+            text_color=p.fg_muted,
         ).pack(side='left')
-
-        ttk.Separator(body).pack(fill='x', pady=(4, 8))
-
-        # --- УЛУЧШЕНИЕ 2: двойной прогресс-бар ---
-        f_prog = ttk.Frame(body)
-        f_prog.pack(fill='x', pady=(0, 4))
-        ttk.Label(f_prog, text="Файлы:", style='Muted.TLabel', width=8).pack(side='left')
-        self.progress = ttk.Progressbar(
-            f_prog, style='Accent.Horizontal.TProgressbar', mode='determinate'
+        self.progress = ctk.CTkProgressBar(files_row, height=12, corner_radius=6)
+        self.progress.set(0)
+        self.progress.pack(side='left', fill='x', expand=True, padx=8)
+        self.progress_file_lbl = ctk.CTkLabel(
+            files_row, text="0/0", width=76, font=theme.font(12),
+            text_color=p.fg_muted,
         )
-        self.progress.pack(side='left', fill='x', expand=True)
-        self.progress_file_lbl = ttk.Label(f_prog, text="0/0", style='Muted.TLabel', width=8)
-        self.progress_file_lbl.pack(side='left', padx=(6, 0))
+        self.progress_file_lbl.pack(side='left')
 
-        f_prog2 = ttk.Frame(body)
-        f_prog2.pack(fill='x', pady=(0, 8))
-        ttk.Label(f_prog2, text="Строки:", style='Muted.TLabel', width=8).pack(side='left')
-        self.progress_lines = ttk.Progressbar(
-            f_prog2, style='Accent.Horizontal.TProgressbar', mode='determinate'
+        lines_row = ctk.CTkFrame(progress_card, fg_color='transparent')
+        lines_row.pack(fill='x', pady=(8, 0))
+        ctk.CTkLabel(
+            lines_row, text="Строки:", width=112, anchor='w', font=theme.font(12),
+            text_color=p.fg_muted,
+        ).pack(side='left')
+        self.progress_lines = ctk.CTkProgressBar(lines_row, height=12, corner_radius=6)
+        self.progress_lines.set(0)
+        self.progress_lines.pack(side='left', fill='x', expand=True, padx=8)
+        self.progress_lines_lbl = ctk.CTkLabel(
+            lines_row, text="0/0", width=76, font=theme.font(12),
+            text_color=p.fg_muted,
         )
-        self.progress_lines.pack(side='left', fill='x', expand=True)
-        self.progress_lines_lbl = ttk.Label(
-            f_prog2, text="0/0", style='Muted.TLabel', width=8
-        )
-        self.progress_lines_lbl.pack(side='left', padx=(6, 0))
+        self.progress_lines_lbl.pack(side='left')
 
         # --- Журнал ---
-        f_log = ttk.LabelFrame(body, text=" Журнал ", padding=8)
-        f_log.pack(fill='both', expand=True)
-        self.log_widget = scrolledtext.ScrolledText(
-            f_log, height=10, wrap='word', font=(theme.FONT_MONO, 9),
-            relief='flat', borderwidth=0, highlightthickness=0, padx=8, pady=6,
-            state='disabled',
+        log_card = ctk.CTkFrame(body, corner_radius=10)
+        log_card.pack(fill='both', expand=True, pady=(0, 4))
+        log_header = ctk.CTkFrame(log_card, fg_color='transparent')
+        log_header.pack(fill='x', padx=16, pady=(12, 6))
+        ctk.CTkLabel(
+            log_header, text="Журнал", font=theme.font(13, "bold"),
+            text_color=p.accent, anchor='w',
+        ).pack(side='left')
+        self.log_widget = ctk.CTkTextbox(
+            log_card, corner_radius=8, font=theme.font(12, mono=True),
+            wrap='word', state='disabled', activate_scrollbars=True,
         )
-        self.log_widget.pack(fill='both', expand=True)
+        self.log_widget.pack(fill='both', expand=True, padx=16, pady=(0, 16))
         self._refresh_log_colors()
 
-        # --- Кнопки ---
-        fb = ttk.Frame(self, padding=(15, 8))
-        fb.pack(fill='x')
-        self.start_btn = ttk.Button(
-            fb, text="▶ НАЧАТЬ ПЕРЕВОД", style='Accent.TButton', command=self.start
-        )
-        self.start_btn.pack(side='left', fill='x', expand=True, padx=(0, 6), ipady=4)
-        self.stop_btn = ttk.Button(
-            fb, text="■ СТОП", state='disabled', style='Danger.TButton', command=self.stop
-        )
-        self.stop_btn.pack(side='left', fill='x', expand=True, padx=6, ipady=4)
-        ttk.Button(
-            fb, text="Очистить лог", style='Tool.TButton', command=self.clear_log
-        ).pack(side='left', fill='x', expand=True, padx=(6, 0), ipady=4)
-
-        # --- Статус-бар ---
-        ttk.Separator(self).pack(fill='x')
-        status_bar = ttk.Frame(self, style='Panel.TFrame', padding=(15, 6))
-        status_bar.pack(fill='x')
-        self.status_var = tk.StringVar(value="Готов к работе")
-        self.speed_var = tk.StringVar(value="")
-        ttk.Label(
-            status_bar, textvariable=self.status_var, style='Panel.Muted.TLabel'
-        ).pack(side='left')
-        ttk.Label(
-            status_bar, textvariable=self.speed_var, style='Panel.Success.TLabel'
-        ).pack(side='right')
-
-    def _on_target_lang_change(self, event=None):
-        label = self.target_lang_cb.get()
+    def _on_target_lang_change(self, label=None):
+        label = label if label is not None else self.target_lang_cb.get()
         code = self._target_lang_map.get(label, "ru")
         self.target_lang_var.set(code)
 
@@ -480,13 +544,13 @@ class App(tk.Tk):
 
     def _toggle_api_field(self, event=None):
         if self.engine_var.get() == "DeepL":
-            self.api_entry.config(state='normal')
-            self.api_lbl.config(style='TLabel')
-            self.verify_btn.config(state='normal')
+            self.api_entry.configure(state='normal')
+            self.api_lbl.configure(text_color=self._palette.fg)
+            self.verify_btn.configure(state='normal')
         else:
-            self.api_entry.config(state='disabled')
-            self.api_lbl.config(style='Subtle.TLabel')
-            self.verify_btn.config(state='disabled')
+            self.api_entry.configure(state='disabled')
+            self.api_lbl.configure(text_color=self._palette.fg_subtle)
+            self.verify_btn.configure(state='disabled')
             self.api_status_var.set("")
 
     def _note_fallback_engine(self, requested: str, used: str, count: int):
@@ -584,16 +648,16 @@ class App(tk.Tk):
         api_key = self.api_key_var.get().strip()
         if not api_key:
             self.api_status_var.set("Нет ключа")
-            self.api_status_lbl.config(style='Error.TLabel')
+            self.api_status_lbl.configure(text_color=self._palette.error)
             return
         if not DEEPL_OK or deepl is None:
             self.api_status_var.set("Нет клиента")
-            self.api_status_lbl.config(style='Error.TLabel')
+            self.api_status_lbl.configure(text_color=self._palette.error)
             return
 
         self.api_status_var.set("Проверка...")
-        self.api_status_lbl.config(style='Warning.TLabel')
-        self.verify_btn.config(state='disabled')
+        self.api_status_lbl.configure(text_color=self._palette.warning)
+        self.verify_btn.configure(state='disabled')
 
         def check():
             try:
@@ -618,13 +682,13 @@ class App(tk.Tk):
         def on_done(success, msg):
             if success:
                 self.api_status_var.set("✓ Валиден")
-                self.api_status_lbl.config(style='Success.TLabel')
+                self.api_status_lbl.configure(text_color=self._palette.success)
                 self.log_line("DeepL API ключ успешно проверен!", 'success')
             else:
                 self.api_status_var.set(f"✗ {msg}")
-                self.api_status_lbl.config(style='Error.TLabel')
+                self.api_status_lbl.configure(text_color=self._palette.error)
                 self.log_line(f"DeepL API проверка не пройдена: {msg}", 'error')
-            self.verify_btn.config(state='normal')
+            self.verify_btn.configure(state='normal')
 
         def check_and_post():
             self._post_ui(on_done, *check())
@@ -645,7 +709,7 @@ class App(tk.Tk):
         if threading.current_thread() is not self._ui_thread:
             self._post_ui(self.log_line, text, tag)
             return
-        self.log_widget.config(state='normal')
+        self.log_widget.configure(state='normal')
         timestamp = datetime.now().strftime("%H:%M:%S")
         full_text = f"[{timestamp}] {text}"
         if tag:
@@ -653,21 +717,28 @@ class App(tk.Tk):
         else:
             self.log_widget.insert('end', full_text + '\n')
         self.log_widget.see('end')
-        self.log_widget.config(state='disabled')
+        self.log_widget.configure(state='disabled')
 
     def clear_log(self):
-        self.log_widget.config(state='normal')
+        self.log_widget.configure(state='normal')
         self.log_widget.delete('1.0', 'end')
-        self.log_widget.config(state='disabled')
+        self.log_widget.configure(state='disabled')
+
+    @staticmethod
+    def _fraction(done: int, total: int) -> float:
+        """CustomTkinter progress bars take a 0…1 fraction, not a maximum."""
+        if total <= 0:
+            return 0.0
+        return max(0.0, min(1.0, done / total))
 
     def _update_line_progress(self, done: int, total: int):
-        self.progress_lines.configure(maximum=max(total, 1), value=done)
+        self.progress_lines.set(self._fraction(done, total))
         self.progress_lines_lbl.configure(text=f"{done}/{total}")
 
     def stop(self):
         self._stop_event.set()
         self.status_var.set("Остановка текущей пачки…")
-        self.stop_btn.config(state='disabled')
+        self.stop_btn.configure(state='disabled')
 
     def _load_settings(self, settings: Optional[Dict[str, Any]] = None):
         s = settings if settings is not None else load_settings()
@@ -796,8 +867,8 @@ class App(tk.Tk):
     def _translation_finished(self):
         if self._closing:
             return
-        self.start_btn.config(state='normal')
-        self.stop_btn.config(state='disabled')
+        self.start_btn.configure(state='normal')
+        self.stop_btn.configure(state='disabled')
         if self._close_when_finished:
             self._finish_close()
 
@@ -884,9 +955,9 @@ class App(tk.Tk):
             return
 
         self._stop_event.clear()
-        self.start_btn.config(state='disabled')
-        self.stop_btn.config(state='normal')
-        self.progress['value'] = 0
+        self.start_btn.configure(state='disabled')
+        self.stop_btn.configure(state='normal')
+        self.progress.set(0)
 
         config = {
             'engine': engine,
@@ -981,8 +1052,8 @@ class App(tk.Tk):
                 translator.__aenter__(), self._async_loop
             ).result()
 
-            self._post_ui(self.progress.configure, maximum=total_files, value=0)
-            self._post_ui(self.progress_lines.configure, maximum=1, value=0)
+            self._post_ui(self.progress.set, 0)
+            self._post_ui(self.progress_lines.set, 0)
             self._post_ui(self.progress_file_lbl.configure, text=f"0/{total_files}")
 
             for i, fp in enumerate(files):
@@ -996,7 +1067,7 @@ class App(tk.Tk):
                 )
                 self.log_line(f"[{i+1}/{total_files}] {rel}")
                 self._post_ui(self.progress_file_lbl.configure, text=f"{i+1}/{total_files}")
-                self._post_ui(self.progress_lines.configure, maximum=1, value=0)
+                self._post_ui(self.progress_lines.set, 0)
                 self._post_ui(self.progress_lines_lbl.configure, text="0/?")
 
                 dst_path = output_paths[fp]
@@ -1064,7 +1135,9 @@ class App(tk.Tk):
                         preview_cancellations += 1
                         if self._stop_event.is_set():
                             break
-                        self._post_ui(self.progress.configure, value=i + 1)
+                        self._post_ui(
+                            self.progress.set, self._fraction(i + 1, total_files)
+                        )
                         self._post_ui(
                             self.progress_file_lbl.configure,
                             text=f"{i+1}/{total_files}",
@@ -1076,7 +1149,9 @@ class App(tk.Tk):
                         errors += 1
                         # A malformed/ambiguous file should not prevent the
                         # remaining independent localization files from running.
-                        self._post_ui(self.progress.configure, value=i + 1)
+                        self._post_ui(
+                            self.progress.set, self._fraction(i + 1, total_files)
+                        )
                         self._post_ui(
                             self.progress_file_lbl.configure,
                             text=f"{i+1}/{total_files}",
@@ -1096,7 +1171,7 @@ class App(tk.Tk):
                     logger.exception("File error: %s", fp)
                     errors += 1
 
-                self._post_ui(self.progress.configure, value=i + 1)
+                self._post_ui(self.progress.set, self._fraction(i + 1, total_files))
                 self._post_ui(
                     self.progress_file_lbl.configure, text=f"{i+1}/{total_files}"
                 )

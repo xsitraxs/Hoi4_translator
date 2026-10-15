@@ -1,96 +1,99 @@
-"""Colour palettes and the ttk style sheet.
+"""Palettes, fonts and the CustomTkinter colour theme.
 
-Both themes are described by one :class:`Palette`, so retuning a colour or the
-accent is a one-line change, and switching a theme is a single re-apply of the
-style sheet. Every widget uses a *named* style instead of a hard-coded colour:
-that is what lets a running window change theme without being rebuilt.
+The amber theme file (``amber.json``) defines how the *widgets* look; this
+module defines the colours that a widget cannot express on its own: log tags,
+status messages, the zebra striping of the preview and the accent shades used
+for the buttons that must stand out. Two palettes — dark and light — are
+selected with ``customtkinter.set_appearance_mode``, so switching a theme is a
+single call and every widget follows.
 """
 from dataclasses import dataclass
-from tkinter import ttk
-from typing import Dict, Optional, Tuple
+from pathlib import Path
+from typing import Dict, Optional
 
-# Segoe UI is present on Windows and macOS; Tk falls back gracefully elsewhere.
-FONT = "Segoe UI"
+import customtkinter as ctk
+
+FONT_FAMILY = "Segoe UI"
 FONT_MONO = "Consolas"
 
 
 @dataclass(frozen=True)
 class Palette:
-    """One complete colour scheme."""
+    """Colours that are not part of the widget theme."""
 
-    name: str
+    name: str          # совпадает с режимом CustomTkinter: dark | light
     label: str
-    bg: str           # фон окна
-    panel: str        # панели, шапка, статус-бар
-    panel_alt: str    # hover/active, ползунок прогресса
-    input_bg: str     # поля ввода и комбобоксы
+    bg: str
+    panel: str
+    panel_alt: str
+    input_bg: str
     border: str
     fg: str
     fg_muted: str
     fg_subtle: str
     accent: str
-    accent_active: str
-    on_accent: str    # текст на акцентной кнопке
+    accent_hover: str
+    on_accent: str     # текст на акцентной кнопке
     success: str
     warning: str
     error: str
     info: str
     log_bg: str
     log_fg: str
-    row_alt: str      # «зебра» в предпросмотре
+    row_alt: str
 
 
 DARK = Palette(
     name="dark",
     label="Тёмная",
-    bg="#1a1a1a",
-    panel="#272727",
-    panel_alt="#3a3a3a",
-    input_bg="#232323",
-    border="#3d3d3d",
-    fg="#f2f2f2",
-    fg_muted="#bbbbbb",
-    fg_subtle="#8a8a8a",
-    accent="#f5a524",
-    accent_active="#ffbe45",
-    on_accent="#1a1a1a",
-    success="#69db7c",
-    warning="#ffa500",
-    error="#ff6b6b",
-    info="#74c0fc",
-    log_bg="#101010",
-    log_fg="#d8d8d8",
-    row_alt="#202020",
+    bg="#16181B",
+    panel="#1E2023",
+    panel_alt="#26292D",
+    input_bg="#1A1C1F",
+    border="#2E3237",
+    fg="#ECEEF1",
+    fg_muted="#A9AFB8",
+    fg_subtle="#7A818B",
+    accent="#F5A524",
+    accent_hover="#FFBE45",
+    on_accent="#16181B",
+    success="#5BD47C",
+    warning="#F5A524",
+    error="#FF6B6B",
+    info="#6FC3FF",
+    log_bg="#15171A",
+    log_fg="#D8DBE0",
+    row_alt="#202327",
 )
 
 LIGHT = Palette(
     name="light",
     label="Светлая",
-    bg="#f4f5f7",
-    panel="#ffffff",
-    panel_alt="#e9ebee",
-    input_bg="#ffffff",
-    border="#d5d8dc",
-    fg="#1f2124",
-    fg_muted="#4a4f55",
-    fg_subtle="#6b7280",
-    accent="#c2410c",
-    accent_active="#9a3412",
-    on_accent="#ffffff",
-    success="#2e7d32",
-    warning="#a16207",
-    error="#c62828",
-    info="#1565c0",
-    log_bg="#ffffff",
-    log_fg="#2b2f34",
-    row_alt="#f1f2f4",
+    bg="#F4F5F7",
+    panel="#FFFFFF",
+    panel_alt="#EDEFF2",
+    input_bg="#FFFFFF",
+    border="#D5D8DC",
+    fg="#1F2124",
+    fg_muted="#565C66",
+    fg_subtle="#7A818B",
+    accent="#D97706",
+    accent_hover="#B45309",
+    on_accent="#FFFFFF",
+    success="#2E7D32",
+    warning="#B45309",
+    error="#C62828",
+    info="#1565C0",
+    log_bg="#FFFFFF",
+    log_fg="#2B2F34",
+    row_alt="#F1F2F4",
 )
 
 PALETTES: Dict[str, Palette] = {palette.name: palette for palette in (DARK, LIGHT)}
 DEFAULT_THEME = DARK.name
 
 # Log tags: every message colour in one place.
-LOG_TAGS: Tuple[str, ...] = ("error", "success", "info", "warning", "muted")
+LOG_TAGS = ("error", "success", "info", "warning", "muted")
 
 
 def resolve(name: Optional[str]) -> Palette:
@@ -114,114 +117,24 @@ def log_tag_colors(palette: Palette) -> Dict[str, str]:
     }
 
 
-def _label_styles(style: ttk.Style, palette: Palette, prefix: str, background: str) -> None:
-    """Define the label family for one background (window or panel)."""
-    base = f"{prefix}TLabel" if prefix else "TLabel"
-    style.configure(base, background=background, foreground=palette.fg, font=(FONT, 10))
-    style.configure(f"{prefix}Muted.TLabel", background=background, foreground=palette.fg_muted)
-    style.configure(f"{prefix}Subtle.TLabel", background=background, foreground=palette.fg_subtle)
-    style.configure(f"{prefix}Accent.TLabel", background=background, foreground=palette.accent)
-    style.configure(f"{prefix}Success.TLabel", background=background, foreground=palette.success)
-    style.configure(f"{prefix}Warning.TLabel", background=background, foreground=palette.warning)
-    style.configure(f"{prefix}Error.TLabel", background=background, foreground=palette.error)
-    style.configure(f"{prefix}Info.TLabel", background=background, foreground=palette.info)
+def theme_file() -> str:
+    """Path of the amber widget theme shipped with the package."""
+    return str(Path(__file__).with_name("amber.json"))
 
 
-def apply_style(root, palette: Palette) -> None:
-    """Apply `palette` to `root` and to every named style the GUI uses."""
-    style = ttk.Style(root)
-    style.theme_use("clam")
-    p = palette
+def install_theme() -> None:
+    """Load the amber widget theme once per process."""
+    ctk.set_default_color_theme(theme_file())
 
-    root.configure(background=p.bg)
-    # Defaults for anything we did not name explicitly.
-    style.configure(
-        ".",
-        background=p.bg,
-        foreground=p.fg,
-        font=(FONT, 10),
-        bordercolor=p.border,
-        troughcolor=p.panel_alt,
-    )
 
-    # --- containers ------------------------------------------------------
-    style.configure("TFrame", background=p.bg)
-    style.configure("Panel.TFrame", background=p.panel)
-    style.configure("Header.TFrame", background=p.panel)
-    style.configure("TLabelframe", background=p.bg, borderwidth=1, relief="solid")
-    style.configure(
-        "TLabelframe.Label",
-        background=p.bg,
-        foreground=p.accent,
-        font=(FONT, 10, "bold"),
-    )
-    style.configure("TSeparator", background=p.border)
+def apply(root, palette: Palette) -> None:
+    """Switch the whole application to `palette`."""
+    ctk.set_appearance_mode(palette.name)
+    root.configure(fg_color=palette.bg)
 
-    # --- text ------------------------------------------------------------
-    _label_styles(style, p, "", p.bg)
-    _label_styles(style, p, "Panel.", p.panel)
-    _label_styles(style, p, "Header.", p.panel)
-    style.configure("Title.TLabel", background=p.panel, foreground=p.accent,
-                    font=(FONT, 17, "bold"))
-    style.configure("Header.Title.TLabel", background=p.panel, foreground=p.accent,
-                    font=(FONT, 17, "bold"))
-    style.configure("Subtitle.TLabel", background=p.panel, foreground=p.fg_subtle,
-                    font=(FONT, 9))
-    style.configure("Header.Subtitle.TLabel", background=p.panel,
-                    foreground=p.fg_subtle, font=(FONT, 9))
 
-    # --- buttons ---------------------------------------------------------
-    style.configure("TButton", background=p.panel, foreground=p.fg,
-                    borderwidth=1, padding=(12, 6), font=(FONT, 10))
-    style.map(
-        "TButton",
-        background=[("active", p.panel_alt), ("disabled", p.panel)],
-        foreground=[("disabled", p.fg_subtle)],
+def font(size: int = 13, weight: Optional[str] = None, mono: bool = False) -> "ctk.CTkFont":
+    """A font that follows the theme's own family."""
+    return ctk.CTkFont(
+        family=FONT_MONO if mono else FONT_FAMILY, size=size, weight=weight
     )
-    style.configure("Tool.TButton", padding=(10, 4), font=(FONT, 9))
-    style.configure("Header.Tool.TButton", background=p.panel_alt, padding=(10, 4),
-                    font=(FONT, 9))
-    style.configure("Accent.TButton", background=p.accent, foreground=p.on_accent,
-                    borderwidth=0, padding=(14, 8), font=(FONT, 10, "bold"))
-    style.map(
-        "Accent.TButton",
-        background=[("active", p.accent_active), ("disabled", p.panel)],
-        foreground=[("disabled", p.fg_subtle)],
-    )
-    style.configure("Danger.TButton", background=p.panel, foreground=p.error,
-                    borderwidth=1, padding=(14, 8), font=(FONT, 10, "bold"))
-    style.map(
-        "Danger.TButton",
-        background=[("active", p.panel_alt), ("disabled", p.panel)],
-        foreground=[("disabled", p.fg_subtle)],
-    )
-
-    # --- inputs ----------------------------------------------------------
-    style.configure("TEntry", fieldbackground=p.input_bg, foreground=p.fg,
-                    insertcolor=p.fg, borderwidth=1, padding=(7, 5))
-    style.map("TEntry", fieldbackground=[("disabled", p.panel)])
-    style.configure("TCombobox", fieldbackground=p.input_bg, background=p.panel,
-                    foreground=p.fg, arrowcolor=p.fg_muted, borderwidth=1,
-                    padding=(7, 5))
-    style.map(
-        "TCombobox",
-        fieldbackground=[("readonly", p.input_bg), ("disabled", p.panel)],
-        background=[("active", p.panel_alt)],
-        selectbackground=[("readonly", p.input_bg)],
-        selectforeground=[("readonly", p.fg)],
-        arrowcolor=[("disabled", p.fg_subtle)],
-    )
-    style.configure("TCheckbutton", background=p.bg, foreground=p.fg,
-                    indicatorcolor=p.input_bg, padding=(4, 2))
-    style.map(
-        "TCheckbutton",
-        background=[("active", p.bg)],
-        foreground=[("disabled", p.fg_subtle)],
-        indicatorcolor=[("selected", p.accent)],
-    )
-    style.configure("TScale", background=p.bg, troughcolor=p.panel_alt)
-    style.configure("Accent.Horizontal.TProgressbar", background=p.accent,
-                    troughcolor=p.panel_alt, borderwidth=0, thickness=10)
-    style.configure("Vertical.TScrollbar", background=p.panel,
-                    troughcolor=p.bg, arrowcolor=p.fg_muted, borderwidth=0)
-    style.map("Vertical.TScrollbar", background=[("active", p.panel_alt)])

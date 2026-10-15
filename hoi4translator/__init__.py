@@ -164,7 +164,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(USAGE, file=sys.stderr)
         return 2
 
-    from .gui.app import App
+    try:
+        from .gui.app import App
+    except ImportError as error:
+        # customtkinter needs tkinter, and neither is guaranteed to be there.
+        message = (
+            f"Не удалось импортировать GUI: {error}\n\n"
+            "Установите зависимости: python -m pip install -r requirements.txt"
+        )
+        print(message)
+        try:
+            # A windowed build has no console, so the print above is invisible.
+            from tkinter import messagebox
+
+            messagebox.showerror("Hoi4 Translator", message)
+        except Exception:
+            pass
+        return 1
 
     if not TRANSLATOR_OK:
         print("WARNING: pip install deep-translator")

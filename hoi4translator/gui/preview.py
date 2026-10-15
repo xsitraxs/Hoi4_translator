@@ -1,19 +1,20 @@
 """Modal preview window for a translated file."""
 import os
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox
 from typing import List, Optional
 
+import customtkinter as ctk
+
 from ..config import logger
-from ..text import zip_equal
 from ..validation import validate_preview_translations
 from . import theme
 
 
-class PreviewWindow(tk.Toplevel):
+class PreviewWindow(ctk.CTkToplevel):
     """
     Модальное окно предпросмотра перевода.
-    Показывает таблицу Оригинал | Перевод, каждую строку перевода можно отредактировать.
+    Показывает список Оригинал | Перевод, каждую строку перевода можно отредактировать.
     on_accept(edited_list) — вызывается с финальным списком строк при нажатии «Сохранить».
     on_cancel() — вызывается при отмене.
     """
@@ -22,13 +23,15 @@ class PreviewWindow(tk.Toplevel):
     MAX_PREVIEW_ROWS = 1000
 
     def __init__(self, parent, filename: str, originals: List[str], translations: List[str],
-                 on_accept, on_cancel, palette: Optional['theme.Palette'] = None):
+                 on_accept, on_cancel, palette: Optional[theme.Palette] = None):
         super().__init__(parent)
         self._palette = palette if palette is not None else theme.resolve(None)
+        p = self._palette
+
         self.title(f"Предпросмотр — {os.path.basename(filename)}")
-        self.configure(bg=self._palette.bg)
+        self.configure(fg_color=p.bg)
         self.resizable(True, True)
-        self.minsize(900, 500)
+        self.minsize(940, 560)
 
         self._on_accept = on_accept
         self._on_cancel = on_cancel
@@ -46,11 +49,12 @@ class PreviewWindow(tk.Toplevel):
 
             # Центрируем относительно родителя
             self.update_idletasks()
+            width, height = max(self.winfo_width(), 940), max(self.winfo_height(), 580)
             pw, ph = parent.winfo_width(), parent.winfo_height()
             px, py = parent.winfo_rootx(), parent.winfo_rooty()
-            w, h = self.winfo_width(), self.winfo_height()
             self.geometry(
-                f"{max(w,900)}x{max(h,550)}+{px + (pw-max(w,900))//2}+{py + (ph-max(h,550))//2}"
+                f"{width}x{height}+{px + max((pw - width) // 2, 0)}"
+                f"+{py + max((ph - height) // 2, 0)}"
             )
         except Exception:
             # A half-built modal window would keep the grab and freeze the UI.
@@ -63,106 +67,88 @@ class PreviewWindow(tk.Toplevel):
 
     def _build(self, filename, originals, translations):
         p = self._palette
-        BG = p.bg
 
         # Заголовок
-        hdr = tk.Frame(self, bg=p.panel, pady=8)
+        hdr = ctk.CTkFrame(self, corner_radius=0, fg_color=p.panel, height=54)
         hdr.pack(fill='x')
-        tk.Label(hdr, text=f"Предпросмотр: {os.path.basename(filename)}",
-                 bg=p.panel, fg=p.accent, font=(theme.FONT, 11, 'bold')).pack(side='left', padx=15)
+        ctk.CTkLabel(
+            hdr, text=f"Предпросмотр: {os.path.basename(filename)}",
+            font=theme.font(15, "bold"), text_color=p.accent,
+        ).pack(side='left', padx=18, pady=12)
         shown = min(len(originals), self.MAX_PREVIEW_ROWS)
         count_text = (
             f"показаны первые {shown} из {len(originals)} строк"
             if shown < len(originals) else f"{len(originals)} строк"
         )
-        tk.Label(hdr, text=count_text,
-                 bg=p.panel, fg=p.fg_muted, font=(theme.FONT, 10)).pack(side='right', padx=15)
+        ctk.CTkLabel(
+            hdr, text=count_text, font=theme.font(12), text_color=p.fg_muted
+        ).pack(side='right', padx=18, pady=12)
 
         # Заголовки колонок
-        col_hdr = tk.Frame(self, bg=p.panel_alt)
-        col_hdr.pack(fill='x', padx=10, pady=(8, 0))
-        tk.Label(col_hdr, text="  Оригинал", bg=p.panel_alt, fg=p.info,
-                 font=(theme.FONT, 9, 'bold'), anchor='w').pack(side='left', fill='x', expand=True)
-        tk.Label(col_hdr, text="  Перевод (можно редактировать)", bg=p.panel_alt, fg=p.success,
-                 font=(theme.FONT, 9, 'bold'), anchor='w').pack(side='left', fill='x', expand=True)
+        columns = ctk.CTkFrame(self, fg_color='transparent')
+        columns.pack(fill='x', padx=18, pady=(12, 4))
+        ctk.CTkLabel(
+            columns, text="Оригинал", font=theme.font(12, "bold"),
+            text_color=p.info, anchor='w',
+        ).pack(side='left', fill='x', expand=True, padx=(0, 6))
+        ctk.CTkLabel(
+            columns, text="Перевод (можно редактировать)",
+            font=theme.font(12, "bold"), text_color=p.success, anchor='w',
+        ).pack(side='left', fill='x', expand=True, padx=(6, 0))
 
-        # Scrollable таблица
-        container = tk.Frame(self, bg=BG)
-        container.pack(fill='both', expand=True, padx=10, pady=4)
-
-        canvas = tk.Canvas(container, bg=BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(container, orient='vertical', command=canvas.yview)
-        self._scroll_frame = tk.Frame(canvas, bg=BG)
-
-        self._scroll_frame.bind(
-            '<Configure>',
-            lambda _event: canvas.configure(scrollregion=canvas.bbox('all'))
+        # Прокручиваемая таблица
+        table = ctk.CTkScrollableFrame(
+            self, corner_radius=10, label_text="", fg_color=p.panel
         )
-        canvas.create_window((0, 0), window=self._scroll_frame, anchor='nw')
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        scrollbar.pack(side='right', fill='y')
-        canvas.pack(side='left', fill='both', expand=True)
-
-        # Привязка колёсика мыши: Windows/macOS шлют <MouseWheel>, X11 — <Button-4/5>
-        def _on_wheel(event):
-            if getattr(event, "num", 0) == 4:
-                canvas.yview_scroll(-1, 'units')
-            elif getattr(event, "num", 0) == 5:
-                canvas.yview_scroll(1, 'units')
-            else:
-                canvas.yview_scroll(-1 * (event.delta // 120), 'units')
-
-        def _bind_wheel(_event=None):
-            for sequence in ('<MouseWheel>', '<Button-4>', '<Button-5>'):
-                canvas.bind_all(sequence, _on_wheel)
-
-        def _unbind_wheel(_event=None):
-            for sequence in ('<MouseWheel>', '<Button-4>', '<Button-5>'):
-                canvas.unbind_all(sequence)
-
-        canvas.bind('<Enter>', _bind_wheel)
-        canvas.bind('<Leave>', _unbind_wheel)
+        table.pack(fill='both', expand=True, padx=18, pady=4)
 
         # Строки таблицы. На строку создаётся два виджета, поэтому на больших
         # файлах окно строилось минутами: редактируемую часть ограничиваем.
-        for i, (orig, trans) in enumerate(
-            zip_equal(
+        for number, (orig, trans) in enumerate(
+            zip(
                 originals[:self.MAX_PREVIEW_ROWS], translations[:self.MAX_PREVIEW_ROWS]
             )
         ):
-            row_bg = BG if i % 2 == 0 else p.row_alt
-            row = tk.Frame(self._scroll_frame, bg=row_bg)
-            row.pack(fill='x', pady=1)
+            row = ctk.CTkFrame(table, fg_color='transparent')
+            row.pack(fill='x', pady=2)
 
-            # Оригинал (только для чтения)
-            orig_lbl = tk.Text(row, bg=row_bg, fg=p.fg_muted, font=(theme.FONT_MONO, 9),
-                               height=1, relief='flat', wrap='none', bd=0,
-                               cursor='arrow', state='normal')
-            orig_lbl.insert('1.0', orig[:120] + ('…' if len(orig) > 120 else ''))
-            orig_lbl.config(state='disabled')
-            orig_lbl.pack(side='left', fill='x', expand=True, padx=(4, 2), pady=2)
+            ctk.CTkLabel(
+                row, text=f"{number + 1}. {orig[:160]}"
+                          f"{'…' if len(orig) > 160 else ''}",
+                font=theme.font(12, mono=True), text_color=p.fg_muted,
+                anchor='w', justify='left',
+            ).pack(side='left', fill='x', expand=True, padx=(0, 6))
 
-            # Перевод (редактируемый)
             var = tk.StringVar(value=trans)
             self._entries.append(var)
-            entry = ttk.Entry(row, textvariable=var, font=(theme.FONT_MONO, 9))
-            entry.pack(side='left', fill='x', expand=True, padx=(2, 4), pady=2)
+            ctk.CTkEntry(
+                row, textvariable=var, font=theme.font(12, mono=True)
+            ).pack(side='left', fill='x', expand=True, padx=(6, 0))
 
         # Подсказка
-        tk.Label(self, text="💡 Отредактируй любую строку перевода, затем нажми «Сохранить»",
-                 bg=BG, fg=p.fg_subtle, font=(theme.FONT, 9)).pack(pady=(0, 4))
+        ctk.CTkLabel(
+            self,
+            text="💡 Отредактируй любую строку перевода, затем нажми «Сохранить»",
+            font=theme.font(12), text_color=p.fg_subtle,
+        ).pack(pady=(6, 2))
 
         # Кнопки
-        btn_frame = tk.Frame(self, bg=p.panel, pady=8)
+        btn_frame = ctk.CTkFrame(self, corner_radius=0, fg_color=p.panel, height=60)
         btn_frame.pack(fill='x')
-
-        ttk.Button(btn_frame, text="✔ Сохранить и записать файл",
-                   command=self._accept).pack(side='left', padx=15, ipadx=10, ipady=4)
-        ttk.Button(btn_frame, text="✘ Отмена (не записывать)",
-                   command=self._cancel).pack(side='left', ipadx=10, ipady=4)
-        tk.Label(btn_frame, text=f"Файл: {os.path.basename(filename)}",
-                 bg=p.panel, fg=p.fg_subtle, font=(theme.FONT, 9)).pack(side='right', padx=15)
+        ctk.CTkButton(
+            btn_frame, text="✔ Сохранить и записать файл", height=34,
+            fg_color=p.accent, hover_color=p.accent_hover, text_color=p.on_accent,
+            font=theme.font(13, "bold"), command=self._accept,
+        ).pack(side='left', padx=18, pady=13)
+        ctk.CTkButton(
+            btn_frame, text="✘ Отмена (не записывать)", height=34,
+            fg_color=p.panel_alt, hover_color=p.border, font=theme.font(12),
+            command=self._cancel,
+        ).pack(side='left', pady=13)
+        ctk.CTkLabel(
+            btn_frame, text=f"Файл: {os.path.basename(filename)}",
+            font=theme.font(12), text_color=p.fg_subtle,
+        ).pack(side='right', padx=18, pady=13)
 
     def _accept(self):
         # Only the visible rows are editable; the rest keep the engine output.

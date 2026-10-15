@@ -79,6 +79,34 @@ class Widget:
     def winfo_exists(self):
         return True
 
+    # Geometry queries must be numbers: the code centres windows with them.
+    def winfo_width(self):
+        return 1200
+
+    def winfo_height(self):
+        return 800
+
+    def winfo_rootx(self):
+        return 100
+
+    def winfo_rooty(self):
+        return 100
+
+    def winfo_x(self):
+        return 0
+
+    def winfo_y(self):
+        return 0
+
+    def winfo_ismapped(self):
+        return True
+
+    def winfo_screenwidth(self):
+        return 1920
+
+    def winfo_screenheight(self):
+        return 1080
+
     def __getattr__(self, item):
         # Private names are real attributes: getattr(obj, name, default) must
         # be able to report "not there yet" instead of returning a callable.
@@ -141,6 +169,191 @@ def _widget_factory(name):
     return type(name, (Widget,), {})
 
 
+# ---------------------------------------------------------------------------
+# CustomTkinter
+# ---------------------------------------------------------------------------
+
+# Documented constructor options per widget. Unknown options raise, so a typo
+# like text_colorr= is caught here and not by the user on their screen.
+CTK_OPTIONS = {
+    "CTk": {"fg_color"},
+    "CTkToplevel": {"fg_color"},
+    "CTkFrame": {
+        "width", "height", "corner_radius", "border_width", "bg_color",
+        "fg_color", "border_color", "background_corner_colors",
+        "overwrite_preferred_drawing_method",
+    },
+    "CTkLabel": {
+        "width", "height", "corner_radius", "border_width", "bg_color",
+        "fg_color", "border_color", "text_color", "text_color_disabled",
+        "text", "font", "image", "compound", "anchor", "wraplength",
+        "textvariable", "justify",
+    },
+    "CTkButton": {
+        "width", "height", "corner_radius", "border_width", "border_spacing",
+        "bg_color", "fg_color", "hover_color", "border_color", "text_color",
+        "text_color_disabled", "background_corner_colors",
+        "round_width_to_even_numbers", "round_height_to_even_numbers", "text",
+        "font", "textvariable", "image", "state", "hover", "command",
+        "compound", "anchor",
+    },
+    "CTkEntry": {
+        "width", "height", "corner_radius", "border_width", "bg_color",
+        "fg_color", "border_color", "text_color", "placeholder_text_color",
+        "textvariable", "placeholder_text", "font", "state", "justify", "show",
+    },
+    "CTkComboBox": {
+        "width", "height", "corner_radius", "border_width", "bg_color",
+        "fg_color", "border_color", "button_color", "button_hover_color",
+        "dropdown_fg_color", "dropdown_hover_color", "dropdown_text_color",
+        "text_color", "text_color_disabled", "font", "dropdown_font", "values",
+        "state", "hover", "variable", "command", "justify",
+    },
+    "CTkCheckBox": {
+        "width", "height", "checkbox_width", "checkbox_height", "corner_radius",
+        "border_width", "bg_color", "fg_color", "hover_color", "border_color",
+        "checkmark_color", "text_color", "text_color_disabled", "text", "font",
+        "textvariable", "state", "hover", "command", "onvalue", "offvalue",
+        "variable",
+    },
+    "CTkSlider": {
+        "width", "height", "corner_radius", "button_corner_radius",
+        "border_width", "button_length", "bg_color", "fg_color",
+        "border_color", "progress_color", "button_color", "button_hover_color",
+        "from_", "to", "state", "number_of_steps", "scroll_step", "hover",
+        "command", "variable", "orientation",
+    },
+    "CTkProgressBar": {
+        "width", "height", "corner_radius", "border_width", "bg_color",
+        "fg_color", "border_color", "progress_color", "variable",
+        "orientation", "mode", "determinate_speed", "indeterminate_speed",
+    },
+    "CTkTextbox": {
+        "width", "height", "corner_radius", "border_width", "border_spacing",
+        "bg_color", "fg_color", "border_color", "text_color",
+        "scrollbar_button_color", "scrollbar_button_hover_color", "font",
+        "activate_scrollbars", "wrap", "state",
+    },
+    "CTkScrollableFrame": {
+        "width", "height", "corner_radius", "border_width", "bg_color",
+        "fg_color", "border_color", "scrollbar_fg_color",
+        "scrollbar_button_color", "scrollbar_button_hover_color",
+        "label_fg_color", "label_text_color", "label_text", "label_font",
+        "label_anchor", "orientation",
+    },
+    "CTkScrollbar": {
+        "width", "height", "corner_radius", "border_spacing",
+        "minimum_pixel_length", "bg_color", "fg_color", "button_color",
+        "button_hover_color", "hover", "command", "orientation",
+    },
+}
+
+# Accepted by every widget on top of the class-specific options.
+CTK_COMMON = {"cursor", "takefocus"}
+
+
+def _ctk_name(obj) -> str:
+    """The documented CTk class of a widget, even for subclasses."""
+    for klass in type(obj).__mro__:
+        if klass.__name__ in CTK_OPTIONS:
+            return klass.__name__
+    return type(obj).__name__
+
+
+class CTkWidget(Widget):
+    """A CTk widget that validates its options against the documentation."""
+
+    def __init__(self, master=None, **kwargs):
+        name = _ctk_name(self)
+        unknown = set(kwargs) - CTK_OPTIONS.get(name, set()) - CTK_COMMON
+        if unknown:
+            raise TypeError(f"{name} получил неизвестные опции: {sorted(unknown)}")
+        super().__init__(master, **kwargs)
+
+    def configure(self, *args, **kwargs):
+        require_redraw = kwargs.pop("require_redraw", None)
+        name = _ctk_name(self)
+        unknown = set(kwargs) - CTK_OPTIONS.get(name, set()) - CTK_COMMON - {"font"}
+        if unknown:
+            raise TypeError(f"{name}.configure: неизвестные опции {sorted(unknown)}")
+        self.kwargs.update(kwargs)
+        if require_redraw is not None:
+            CALLS.append((f"{self._name}.configure", ("require_redraw",)))
+        return self
+
+    config = None  # CTk widgets have no .config() alias: catch it in tests
+
+    def set(self, value):
+        self.kwargs["value"] = value
+        CALLS.append((f"{self._name}.set", (value,)))
+
+    def tag_config(self, tag, **kwargs):
+        if "font" in kwargs:
+            raise AttributeError("'font' option forbidden (scaling)")
+        CALLS.append((f"{self._name}.tag_config", (tag,)))
+
+    def cget(self, key):
+        return self.kwargs.get(key)
+
+
+class CTkFont:
+    def __init__(self, family=None, size=None, weight=None, slant="roman",
+                 underline=False, overstrike=False):
+        self.family = family
+        self.size = size
+        self.weight = weight
+        self.slant = slant
+        CALLS.append(("CTkFont", (family, size, weight)))
+
+    def __repr__(self):
+        return f"CTkFont({self.family!r}, {self.size!r}, {self.weight!r})"
+
+
+def _install_customtkinter():
+    ctk = types.ModuleType("customtkinter")
+    ctk.CTkFont = CTkFont
+    ctk.AppearanceModeTracker = None
+
+    for name in CTK_OPTIONS:
+        base = Tk if name == "CTk" else Toplevel if name == "CTkToplevel" else CTkWidget
+        setattr(ctk, name, type(name, (base,), {}))
+
+    ctk.CTkToplevel.__bases__ = (Toplevel, CTkWidget)
+
+    state = {"appearance_mode": "dark", "theme": None, "scaling": 1.0}
+
+    def set_appearance_mode(mode):
+        state["appearance_mode"] = mode
+        CALLS.append(("set_appearance_mode", (mode,)))
+
+    def get_appearance_mode():
+        return state["appearance_mode"]
+
+    def set_default_color_theme(path):
+        state["theme"] = path
+        CALLS.append(("set_default_color_theme", (path,)))
+
+    def set_widget_scaling(value):
+        state["scaling"] = value
+
+    def set_window_scaling(value):
+        state["scaling"] = value
+
+    def deactivate_automatic_dpi_awareness():
+        CALLS.append(("deactivate_automatic_dpi_awareness", ()))
+
+    ctk.set_appearance_mode = set_appearance_mode
+    ctk.get_appearance_mode = get_appearance_mode
+    ctk.set_default_color_theme = set_default_color_theme
+    ctk.set_widget_scaling = set_widget_scaling
+    ctk.set_window_scaling = set_window_scaling
+    ctk.deactivate_automatic_dpi_awareness = deactivate_automatic_dpi_awareness
+    ctk.state = state
+
+    sys.modules["customtkinter"] = ctk
+    return ctk
+
+
 def install():
     tk = types.ModuleType("tkinter")
     tk.Tk = Tk
@@ -186,4 +399,5 @@ def install():
     for mod in ("filedialog", "messagebox", "scrolledtext", "font", "colorchooser",
                 "simpledialog", "commondialog"):
         sys.modules[f"tkinter.{mod}"] = getattr(tk, mod)
+    _install_customtkinter()
     return tk

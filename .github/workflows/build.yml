@@ -112,6 +112,8 @@ jobs:
             --noconsole `
             --name "Hoi4_Translator" `
             --collect-submodules="hoi4translator" `
+            --collect-all="customtkinter" `
+            --collect-all="darkdetect" `
             --collect-all="deep_translator" `
             --collect-all="deepl" `
             --collect-all="keyring" `
@@ -123,6 +125,7 @@ jobs:
             --hidden-import="jpype" `
             --hidden-import="jpype.imports" `
             --add-data "hoi4_translator.jar;." `
+            --add-data "hoi4translator/gui/amber.json;hoi4translator/gui/" `
             hoi4_translator.py
 
       - name: Smoke-test the EXE

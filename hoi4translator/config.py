@@ -41,6 +41,15 @@ except ImportError as error:
     # this text so "no DeepL" can be diagnosed without a console.
     DEEPL_IMPORT_ERROR = str(error)
 
+# CustomTkinter draws the GUI; it needs tkinter, which some Python builds
+# (headless Linux packages) do not ship.
+try:
+    import customtkinter
+    CTK_OK = True
+except ImportError:
+    customtkinter = None
+    CTK_OK = False
+
 
 APP_NAME = "Hoi4Translator"
 

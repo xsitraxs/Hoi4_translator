@@ -1,10 +1,12 @@
 """GUI guarantees that do not need a display.
 
-The window cannot be rendered in CI, but its construction and the theme switch
-can be executed against the tkinter stand-in: that catches a broken layout, a
-missing widget or a style that was never defined — the failures that are easy
-to introduce and impossible to notice without a screen.
+The window cannot be rendered in CI, but its construction, the theme switch and
+the preview can be executed against the tkinter/CustomTkinter stand-in. That
+catches a broken layout, a missing widget or an option a widget does not have —
+the failures that are easy to introduce in GUI code and impossible to notice
+without a screen.
 """
+import json
 import os
 import tempfile
 import unittest
@@ -15,9 +17,12 @@ from tests import tk_stub
 
 tk_stub.install()
 
-from hoi4translator.gui import theme  # noqa: E402  (после установки заглушки)
-from hoi4translator.gui.app import App  # noqa: E402
+import customtkinter as ctk  # noqa: E402  (после установки заглушки)
+
 from hoi4translator import settings as settings_module  # noqa: E402
+from hoi4translator.gui import theme  # noqa: E402
+from hoi4translator.gui.app import App  # noqa: E402
+from hoi4translator.gui.preview import PreviewWindow  # noqa: E402
 
 
 class PaletteTests(unittest.TestCase):
@@ -48,6 +53,53 @@ class PaletteTests(unittest.TestCase):
             self.assertTrue(all(colours.values()))
 
 
+class ThemeFileTests(unittest.TestCase):
+    """amber.json is what the widgets actually read; a typo there is silent."""
+
+    REQUIRED = (
+        "CTk", "CTkToplevel", "CTkFrame", "CTkButton", "CTkLabel", "CTkEntry",
+        "CTkCheckBox", "CTkProgressBar", "CTkSlider", "CTkComboBox",
+        "CTkTextbox", "CTkScrollableFrame", "CTkScrollbar", "CTkFont",
+        "DropdownMenu",
+    )
+
+    def test_theme_file_describes_every_widget(self):
+        path = Path(theme.theme_file())
+        self.assertTrue(path.is_file(), path)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for widget in self.REQUIRED:
+            self.assertIn(widget, data, f"нет секции {widget}")
+
+    def test_every_colour_is_a_light_dark_pair(self):
+        data = json.loads(Path(theme.theme_file()).read_text(encoding="utf-8"))
+        for widget, options in data.items():
+            if widget == "CTkFont":
+                continue
+            for option, value in options.items():
+                if not isinstance(value, list):
+                    continue  # corner_radius и «transparent» — не цвета
+                self.assertEqual(
+                    len(value), 2, f"{widget}.{option}: ожидалась пара [light, dark]"
+                )
+                for colour in value:
+                    self.assertTrue(
+                        colour.startswith(("#", "gray")),
+                        f"{widget}.{option}: подозрительный цвет {colour}",
+                    )
+
+    def test_accent_is_amber_in_both_modes(self):
+        data = json.loads(Path(theme.theme_file()).read_text(encoding="utf-8"))
+        accent = data["CTkProgressBar"]["progress_color"]
+        self.assertTrue(all(colour.startswith("#") for colour in accent))
+        # Янтарный: красный и зелёный заметно выше синего.
+        for colour in accent:
+            red = int(colour[1:3], 16)
+            green = int(colour[3:5], 16)
+            blue = int(colour[5:7], 16)
+            self.assertGreater(red, blue)
+            self.assertGreater(green, blue)
+
+
 class GuiBuildTests(unittest.TestCase):
     """Build the window and switch the theme, with settings in a temp file."""
 
@@ -76,14 +128,20 @@ class GuiBuildTests(unittest.TestCase):
         ):
             self.assertTrue(hasattr(app, attribute), f"нет атрибута {attribute}")
 
-    def test_theme_switch_changes_palette_and_is_remembered(self):
+    def test_widget_theme_is_loaded_before_the_widgets(self):
+        tk_stub.CALLS.clear()
+        self._app()
+        self.assertEqual(ctk.state["theme"], theme.theme_file())
+
+    def test_theme_switch_changes_appearance_mode_and_is_remembered(self):
         app = self._app()
         self.assertEqual(app._theme_name, theme.DEFAULT_THEME)
+        self.assertEqual(ctk.get_appearance_mode(), theme.DEFAULT_THEME)
 
         app._toggle_theme()
         other = theme.opposite(theme.DEFAULT_THEME)
         self.assertEqual(app._theme_name, other)
-        self.assertEqual(app._palette.name, other)
+        self.assertEqual(ctk.get_appearance_mode(), other)
         # The button advertises the theme you get by clicking it.
         self.assertIn(
             theme.resolve(theme.opposite(app._theme_name)).label,
@@ -92,7 +150,7 @@ class GuiBuildTests(unittest.TestCase):
         self.assertEqual(settings_module.load_settings().get("theme"), other)
 
         app._toggle_theme()
-        self.assertEqual(app._theme_name, theme.DEFAULT_THEME)
+        self.assertEqual(ctk.get_appearance_mode(), theme.DEFAULT_THEME)
         self.assertEqual(
             settings_module.load_settings().get("theme"), theme.DEFAULT_THEME
         )
@@ -105,18 +163,26 @@ class GuiBuildTests(unittest.TestCase):
 
         restored = self._app()
         self.assertEqual(restored._theme_name, chosen)
-        self.assertEqual(restored._palette.name, chosen)
+        self.assertEqual(ctk.get_appearance_mode(), chosen)
 
     def test_log_tags_are_recoloured_after_a_switch(self):
         app = self._app()
-        dark = dict(theme.log_tag_colors(theme.resolve("dark")))
-        light = dict(theme.log_tag_colors(theme.resolve("light")))
+        dark = theme.log_tag_colors(theme.resolve("dark"))
+        light = theme.log_tag_colors(theme.resolve("light"))
         self.assertNotEqual(dark["error"], light["error"])
 
         app._toggle_theme()
         self.assertEqual(
-            app.log_widget.kwargs.get("background"), app._palette.log_bg
+            app.log_widget.kwargs.get("fg_color"), app._palette.log_bg
         )
+
+    def test_progress_bars_take_fractions_not_maximums(self):
+        app = self._app()
+        self.assertEqual(app._fraction(0, 0), 0.0)
+        self.assertEqual(app._fraction(3, 4), 0.75)
+        self.assertEqual(app._fraction(9, 4), 1.0)  # перевыполнение не ломает шкалу
+        app._update_line_progress(2, 4)
+        self.assertEqual(app.progress_lines.kwargs["value"], 0.5)
 
     def test_report_helper_still_works_after_a_restyle(self):
         from hoi4translator.report import RunReport
@@ -129,6 +195,33 @@ class GuiBuildTests(unittest.TestCase):
         self.assertTrue(
             all(os.path.exists(path) for path in app._last_report_files)
         )
+
+
+class PreviewWindowTests(unittest.TestCase):
+    def test_preview_builds_with_the_parent_theme(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        settings_file = str(Path(directory.name) / "settings.json")
+        patcher = patch.object(settings_module, "SETTINGS_FILE", settings_file)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        app = App()
+        self.addCleanup(app.destroy)
+        window = PreviewWindow(
+            app,
+            "events_l_english.yml",
+            ["Hello", "World $STATE$"],
+            ["Привет", "Мир $STATE$"],
+            on_accept=lambda _edited: None,
+            on_cancel=lambda: None,
+            palette=app._palette,
+        )
+        self.addCleanup(window.destroy)
+
+        self.assertEqual(window._palette, app._palette)
+        self.assertEqual(len(window._entries), 2)
+        self.assertEqual(window._entries[0].get(), "Привет")
 
 
 if __name__ == "__main__":
