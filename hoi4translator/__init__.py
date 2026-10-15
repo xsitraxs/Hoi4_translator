@@ -172,16 +172,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("INFO: pip install aiohttp  (для ускорения)")
     try:
         App().mainloop()
-    except Exception:
+    except Exception as error:
         # A windowed build has no console: without this the process would die
-        # silently and the user would see no window and no error.
+        # silently and the user would see no window and no error. The reason is
+        # shown as well, otherwise "the GUI is down" is all anyone learns.
         from tkinter import messagebox
 
         logger.exception("Application startup failed")
         try:
             messagebox.showerror(
                 "Hoi4 Translator",
-                "Не удалось запустить приложение. Подробности — в логе:\n" + LOG_FILE,
+                f"Не удалось запустить приложение.\n\n"
+                f"{type(error).__name__}: {error}\n\n"
+                f"Подробности — в логе:\n{LOG_FILE}",
             )
         except Exception:
             pass
