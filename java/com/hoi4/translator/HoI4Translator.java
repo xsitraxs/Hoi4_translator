@@ -36,8 +36,17 @@ public class HoI4Translator {
     /**
      * Translate a full phrase at once to preserve context and placeholder positions.
      * Very long lines are split at sentence/word boundaries without dropping text.
+     * Kept for JARs built before the source language was configurable.
      */
     public String translate(String text, String targetLang) {
+        return translate(text, targetLang, null);
+    }
+
+    /**
+     * Translate with an explicit source language. {@code sourceLang} may be null
+     * or blank to let Google auto-detect the source language.
+     */
+    public String translate(String text, String targetLang, String sourceLang) {
         if (text == null || text.isEmpty()) {
             return text;
         }
@@ -47,7 +56,7 @@ public class HoI4Translator {
 
         StringBuilder result = new StringBuilder(text.length());
         for (String chunk : splitLongText(text)) {
-            result.append(translateChunk(chunk, targetLang));
+            result.append(translateChunk(chunk, targetLang, sourceLang));
         }
         return result.toString();
     }
@@ -133,7 +142,7 @@ public class HoI4Translator {
         return ".!?。！？".indexOf(value) >= 0;
     }
 
-    private String translateChunk(String text, String targetLang) {
+    private String translateChunk(String text, String targetLang, String sourceLang) {
         int bodyStart = 0;
         while (bodyStart < text.length() && Character.isWhitespace(text.charAt(bodyStart))) {
             bodyStart++;
@@ -153,8 +162,11 @@ public class HoI4Translator {
         try {
             String query = URLEncoder.encode(body, StandardCharsets.UTF_8);
             String encodedTarget = URLEncoder.encode(targetLang, StandardCharsets.UTF_8);
-            String url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl="
-                    + encodedTarget + "&dt=t&q=" + query;
+            String encodedSource = (sourceLang == null || sourceLang.isBlank())
+                    ? "auto"
+                    : URLEncoder.encode(sourceLang, StandardCharsets.UTF_8);
+            String url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl="
+                    + encodedSource + "&tl=" + encodedTarget + "&dt=t&q=" + query;
 
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(java.net.URI.create(url))

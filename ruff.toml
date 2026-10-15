@@ -1,0 +1,45 @@
+# Ruff configuration for the HoI4 localization translator.
+# The rules below are the ones the code already satisfies; the ignored ones are
+# a documented backlog instead of 250 warnings nobody reads.
+target-version = "py39"
+line-length = 120
+
+[lint]
+select = [
+    "E",    # pycodestyle errors (including E501 line length)
+    "W",    # pycodestyle warnings (whitespace)
+    "F",    # pyflakes: undefined names, unused imports/variables
+    "I",    # isort: import order
+    "B",    # flake8-bugbear: likely bugs
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "RET",  # flake8-return
+    "PIE",  # flake8-pie
+    "UP",   # pyupgrade
+]
+
+ignore = [
+    # Backlog: switching annotations to PEP 585/604 builtins is a separate,
+    # mechanical change that also has to stay compatible with Python 3.9.
+    "UP006",   # typing.List -> list
+    "UP007",   # typing.Union -> X | Y
+    "UP035",   # deprecated typing imports
+    "UP045",   # typing.Optional -> X | None
+    # zip(..., strict=True) requires Python 3.10; the project supports 3.9 and
+    # uses zip_equal() where a length mismatch would be a real bug.
+    "B905",
+    # Callbacks and Tk bindings must keep unused parameters to satisfy an
+    # interface (preview callbacks, <<ComboboxSelected>> handlers, ...).
+    "ARG001", "ARG002", "ARG003", "ARG005",
+    # try/except/pass with a comment reads better than contextlib.suppress
+    # when the swallowed exception is intentional and platform specific.
+    "SIM105",
+    # `elif` chains after `return` document mutually exclusive branches
+    # (HTTP status handling, file-processing outcomes) more clearly.
+    "RET505",
+]
+
+[lint.per-file-ignores]
+# Behaviour tests build objects with object.__new__ and patch module globals,
+# so unused-argument and import-order rules are noise there.
+"tests/*" = ["ARG", "I"]

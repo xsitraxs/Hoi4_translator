@@ -57,3 +57,8 @@ Icon?
 translation_cache.db
 hoi4_translator.log
 *.log
+
+# Java: собирается из java/ (локально и в CI), в git не хранится
+*.class
+hoi4_translator.jar
+HoI4Translator.jar
