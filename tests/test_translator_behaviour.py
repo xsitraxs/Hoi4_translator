@@ -2,7 +2,6 @@ import asyncio
 import json
 import os
 import shutil
-import sys
 import tempfile
 import threading
 import time
@@ -14,25 +13,16 @@ from unittest.mock import patch
 
 # The service logic can be tested on headless builders where Python was built
 # without Tk. Production still imports the real tkinter module normally.
-try:
-    import tkinter  # noqa: F401
-except ModuleNotFoundError:
-    tk_stub = types.ModuleType("tkinter")
-    tk_stub.Tk = type("Tk", (), {})
-    tk_stub.Toplevel = type("Toplevel", (), {})
-    tk_stub.StringVar = type("StringVar", (), {})
-    tk_stub.BooleanVar = type("BooleanVar", (), {})
-    tk_stub.IntVar = type("IntVar", (), {})
-    for name in ("ttk", "filedialog", "scrolledtext", "messagebox"):
-        setattr(tk_stub, name, types.ModuleType(f"tkinter.{name}"))
-    sys.modules["tkinter"] = tk_stub
+from tests import tk_stub
 
-import hoi4translator as translator_module
-from hoi4translator import pipeline as pipeline_module
-from hoi4translator import report as report_module
-from hoi4translator import settings as settings_module
-from hoi4translator import storage as storage_module
-from hoi4translator import translation as translation_module
+tk_stub.install()
+
+import hoi4translator as translator_module  # noqa: E402  (после установки заглушки)
+from hoi4translator import pipeline as pipeline_module  # noqa: E402
+from hoi4translator import report as report_module  # noqa: E402
+from hoi4translator import settings as settings_module  # noqa: E402
+from hoi4translator import storage as storage_module  # noqa: E402
+from hoi4translator import translation as translation_module  # noqa: E402
 
 
 class TargetLanguageTests(unittest.TestCase):

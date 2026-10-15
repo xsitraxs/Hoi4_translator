@@ -2,11 +2,12 @@
 import os
 import tkinter as tk
 from tkinter import messagebox, ttk
-from typing import List
+from typing import List, Optional
 
 from ..config import logger
 from ..text import zip_equal
 from ..validation import validate_preview_translations
+from . import theme
 
 
 class PreviewWindow(tk.Toplevel):
@@ -21,10 +22,11 @@ class PreviewWindow(tk.Toplevel):
     MAX_PREVIEW_ROWS = 1000
 
     def __init__(self, parent, filename: str, originals: List[str], translations: List[str],
-                 on_accept, on_cancel):
+                 on_accept, on_cancel, palette: Optional['theme.Palette'] = None):
         super().__init__(parent)
+        self._palette = palette if palette is not None else theme.resolve(None)
         self.title(f"Предпросмотр — {os.path.basename(filename)}")
-        self.configure(bg='#1a1a1a')
+        self.configure(bg=self._palette.bg)
         self.resizable(True, True)
         self.minsize(900, 500)
 
@@ -60,28 +62,29 @@ class PreviewWindow(tk.Toplevel):
             raise
 
     def _build(self, filename, originals, translations):
-        BG = '#1a1a1a'
+        p = self._palette
+        BG = p.bg
 
         # Заголовок
-        hdr = tk.Frame(self, bg='#2d2d2d', pady=8)
+        hdr = tk.Frame(self, bg=p.panel, pady=8)
         hdr.pack(fill='x')
         tk.Label(hdr, text=f"Предпросмотр: {os.path.basename(filename)}",
-                 bg='#2d2d2d', fg='#4caf50', font=('Segoe UI', 11, 'bold')).pack(side='left', padx=15)
+                 bg=p.panel, fg=p.accent, font=(theme.FONT, 11, 'bold')).pack(side='left', padx=15)
         shown = min(len(originals), self.MAX_PREVIEW_ROWS)
         count_text = (
             f"показаны первые {shown} из {len(originals)} строк"
             if shown < len(originals) else f"{len(originals)} строк"
         )
         tk.Label(hdr, text=count_text,
-                 bg='#2d2d2d', fg='#aaa', font=('Segoe UI', 10)).pack(side='right', padx=15)
+                 bg=p.panel, fg=p.fg_muted, font=(theme.FONT, 10)).pack(side='right', padx=15)
 
         # Заголовки колонок
-        col_hdr = tk.Frame(self, bg='#252525')
+        col_hdr = tk.Frame(self, bg=p.panel_alt)
         col_hdr.pack(fill='x', padx=10, pady=(8, 0))
-        tk.Label(col_hdr, text="  Оригинал", bg='#252525', fg='#74c0fc',
-                 font=('Segoe UI', 9, 'bold'), anchor='w').pack(side='left', fill='x', expand=True)
-        tk.Label(col_hdr, text="  Перевод (можно редактировать)", bg='#252525', fg='#69db7c',
-                 font=('Segoe UI', 9, 'bold'), anchor='w').pack(side='left', fill='x', expand=True)
+        tk.Label(col_hdr, text="  Оригинал", bg=p.panel_alt, fg=p.info,
+                 font=(theme.FONT, 9, 'bold'), anchor='w').pack(side='left', fill='x', expand=True)
+        tk.Label(col_hdr, text="  Перевод (можно редактировать)", bg=p.panel_alt, fg=p.success,
+                 font=(theme.FONT, 9, 'bold'), anchor='w').pack(side='left', fill='x', expand=True)
 
         # Scrollable таблица
         container = tk.Frame(self, bg=BG)
@@ -128,12 +131,12 @@ class PreviewWindow(tk.Toplevel):
                 originals[:self.MAX_PREVIEW_ROWS], translations[:self.MAX_PREVIEW_ROWS]
             )
         ):
-            row_bg = BG if i % 2 == 0 else '#202020'
+            row_bg = BG if i % 2 == 0 else p.row_alt
             row = tk.Frame(self._scroll_frame, bg=row_bg)
             row.pack(fill='x', pady=1)
 
             # Оригинал (только для чтения)
-            orig_lbl = tk.Text(row, bg=row_bg, fg='#aaa', font=('Consolas', 9),
+            orig_lbl = tk.Text(row, bg=row_bg, fg=p.fg_muted, font=(theme.FONT_MONO, 9),
                                height=1, relief='flat', wrap='none', bd=0,
                                cursor='arrow', state='normal')
             orig_lbl.insert('1.0', orig[:120] + ('…' if len(orig) > 120 else ''))
@@ -143,15 +146,15 @@ class PreviewWindow(tk.Toplevel):
             # Перевод (редактируемый)
             var = tk.StringVar(value=trans)
             self._entries.append(var)
-            entry = ttk.Entry(row, textvariable=var, font=('Consolas', 9))
+            entry = ttk.Entry(row, textvariable=var, font=(theme.FONT_MONO, 9))
             entry.pack(side='left', fill='x', expand=True, padx=(2, 4), pady=2)
 
         # Подсказка
         tk.Label(self, text="💡 Отредактируй любую строку перевода, затем нажми «Сохранить»",
-                 bg=BG, fg='#555', font=('Segoe UI', 9)).pack(pady=(0, 4))
+                 bg=BG, fg=p.fg_subtle, font=(theme.FONT, 9)).pack(pady=(0, 4))
 
         # Кнопки
-        btn_frame = tk.Frame(self, bg='#2d2d2d', pady=8)
+        btn_frame = tk.Frame(self, bg=p.panel, pady=8)
         btn_frame.pack(fill='x')
 
         ttk.Button(btn_frame, text="✔ Сохранить и записать файл",
@@ -159,7 +162,7 @@ class PreviewWindow(tk.Toplevel):
         ttk.Button(btn_frame, text="✘ Отмена (не записывать)",
                    command=self._cancel).pack(side='left', ipadx=10, ipady=4)
         tk.Label(btn_frame, text=f"Файл: {os.path.basename(filename)}",
-                 bg='#2d2d2d', fg='#555', font=('Segoe UI', 9)).pack(side='right', padx=15)
+                 bg=p.panel, fg=p.fg_subtle, font=(theme.FONT, 9)).pack(side='right', padx=15)
 
     def _accept(self):
         # Only the visible rows are editable; the rest keep the engine output.
