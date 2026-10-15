@@ -27,7 +27,12 @@ except ModuleNotFoundError:
         setattr(tk_stub, name, types.ModuleType(f"tkinter.{name}"))
     sys.modules["tkinter"] = tk_stub
 
-import hoi4_translator as translator_module
+import hoi4translator as translator_module
+from hoi4translator import pipeline as pipeline_module
+from hoi4translator import report as report_module
+from hoi4translator import settings as settings_module
+from hoi4translator import storage as storage_module
+from hoi4translator import translation as translation_module
 
 
 class TargetLanguageTests(unittest.TestCase):
@@ -98,7 +103,7 @@ class TargetLanguageTests(unittest.TestCase):
         translator._deepl_client = None
         translator._deepl_lock = threading.Lock()
         fake_deepl = types.SimpleNamespace(DeepLClient=FakeDeepLClient)
-        with patch.object(translator_module, "deepl", fake_deepl, create=True):
+        with patch.object(translation_module, "deepl", fake_deepl, create=True):
             result = translator_module.AsyncTranslator._deepl_sync(
                 translator, "Hello", "pt", retries=1
             )
@@ -128,7 +133,7 @@ class TargetLanguageTests(unittest.TestCase):
         translator._deepl_client = None
         translator._deepl_lock = threading.Lock()
         fake_deepl = types.SimpleNamespace(DeepLClient=FakeDeepLClient)
-        with patch.object(translator_module, "deepl", fake_deepl, create=True):
+        with patch.object(translation_module, "deepl", fake_deepl, create=True):
             result = translator_module.AsyncTranslator._deepl_sync(
                 translator, "你好", "zh-CN", retries=1
             )
@@ -258,8 +263,10 @@ class TargetLanguageTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with patch.object(translator_module, "SETTINGS_FILE", str(settings_path)), patch.object(
-                translator_module, "LEGACY_SETTINGS_FILE", str(legacy_path)
+            with patch.object(
+                settings_module, "SETTINGS_FILE", str(settings_path)
+            ), patch.object(
+                settings_module, "LEGACY_SETTINGS_FILE", str(legacy_path)
             ):
                 settings = translator_module.load_settings()
                 self.assertEqual(settings["_legacy_api_key"], "legacy-secret")
@@ -290,7 +297,7 @@ class TargetLanguageTests(unittest.TestCase):
         NativeBackend = type(
             "WindowsKeyring", (), {"__module__": "keyring.backends.Windows", "priority": 1}
         )
-        with patch.object(translator_module, "keyring", FakeKeyring()):
+        with patch.object(settings_module, "keyring", FakeKeyring()):
             self.assertTrue(translator_module.store_api_key("secret"))
             self.assertEqual(translator_module.load_api_key(), "secret")
             self.assertTrue(translator_module.store_api_key(""))
@@ -303,7 +310,7 @@ class TargetLanguageTests(unittest.TestCase):
             def get_keyring(self):
                 return PlaintextBackend()
 
-        with patch.object(translator_module, "keyring", FakePlaintextKeyring()):
+        with patch.object(settings_module, "keyring", FakePlaintextKeyring()):
             self.assertFalse(translator_module.store_api_key("secret"))
 
 
@@ -318,9 +325,9 @@ class TranslationCacheTests(unittest.TestCase):
                 self.assertEqual(cache.get("Hello", "en", "ru", "Google"), "Привет")
 
                 with patch.object(
-                    translator_module,
+                    storage_module,
                     "CACHE_FORMAT_VERSION",
-                    translator_module.CACHE_FORMAT_VERSION - 1,
+                    storage_module.CACHE_FORMAT_VERSION - 1,
                 ):
                     self.assertIsNone(cache.get("Hello", "en", "ru", "Google"))
             finally:
@@ -781,7 +788,7 @@ class BrazilianPortugueseProviderTests(unittest.IsolatedAsyncioTestCase):
         translator.source_lang = "en"
         translator.session = FakeSession()
         fake_aiohttp = types.SimpleNamespace(ClientTimeout=lambda **kwargs: kwargs)
-        with patch.object(translator_module, "aiohttp", fake_aiohttp, create=True), \
+        with patch.object(translation_module, "aiohttp", fake_aiohttp, create=True), \
                 self.assertRaisesRegex(RuntimeError, "rate-limited"):
             await translator_module.AsyncTranslator._google_async(
                 translator, "Hello", "ru", retries=1
@@ -811,7 +818,7 @@ class BrazilianPortugueseProviderTests(unittest.IsolatedAsyncioTestCase):
         translator.source_lang = "en"
         translator.session = FakeSession()
         fake_aiohttp = types.SimpleNamespace(ClientTimeout=lambda **kwargs: kwargs)
-        with patch.object(translator_module, "aiohttp", fake_aiohttp, create=True):
+        with patch.object(translation_module, "aiohttp", fake_aiohttp, create=True):
             result = await translator_module.AsyncTranslator._google_async(
                 translator, "Hello", "pt", retries=1
             )
@@ -1040,7 +1047,7 @@ class TranslationCancellationTests(unittest.IsolatedAsyncioTestCase):
 # ---------------------------------------------------------------------------
 
 def run_processor(source, destination, translator, target_lang="pl", skip=False,
-                  preview_cb=None, settle=0.0):
+                  preview_cb=None, settle=0.0, broken_line_mode=None, report=None):
     """Run process_file_sync on a private event loop and return (result, logs).
 
     `settle` gives cancelled tasks time to unwind before the loop is closed.
@@ -1055,6 +1062,10 @@ def run_processor(source, destination, translator, target_lang="pl", skip=False,
             lambda *entry: logs.append(entry),
             skip_translated=skip, stop_event=threading.Event(), loop=loop,
             target_lang=target_lang, preview_cb=preview_cb,
+            broken_line_mode=broken_line_mode
+            if broken_line_mode is not None
+            else pipeline_module.BrokenLineMode.REJECT_FILE,
+            report=report,
         )
         if settle:
             time.sleep(settle)
@@ -1192,12 +1203,12 @@ class FileTimeoutTests(unittest.TestCase):
                     return list(texts)
 
             translator = SlowTranslator()
-            original_timeout = translator_module.file_translation_timeout
-            translator_module.file_translation_timeout = lambda count: 0.2
+            original_timeout = pipeline_module.file_translation_timeout
+            pipeline_module.file_translation_timeout = lambda count: 0.2
             try:
                 result, logs = run_processor(source, destination, translator, settle=0.1)
             finally:
-                translator_module.file_translation_timeout = original_timeout
+                pipeline_module.file_translation_timeout = original_timeout
 
             self.assertIsNone(result)
             self.assertFalse(destination.exists())
@@ -1209,12 +1220,12 @@ class FileTimeoutTests(unittest.TestCase):
 
     def test_combined_stop_event_mirrors_both_sources(self):
         outer = threading.Event()
-        combined = translator_module._CombinedStopEvent(outer)
+        combined = pipeline_module._CombinedStopEvent(outer)
         self.assertFalse(combined.is_set())
         outer.set()
         self.assertTrue(combined.is_set())
 
-        other = translator_module._CombinedStopEvent(threading.Event())
+        other = pipeline_module._CombinedStopEvent(threading.Event())
         other.cancel()
         self.assertTrue(other.is_set())
 
@@ -1316,7 +1327,7 @@ class ProviderLanguageCodeTests(unittest.TestCase):
         translator = object.__new__(translator_module.AsyncTranslator)
         translator.source_lang = "en"
         translator.engine = "Google"
-        with patch.object(translator_module, "GoogleTranslator", FakeTranslator):
+        with patch.object(translation_module, "GoogleTranslator", FakeTranslator):
             result = translator_module.AsyncTranslator._sync_fallback(
                 translator, "Hello", "pt", 1, "Google"
             )
@@ -1337,7 +1348,7 @@ class ProviderLanguageCodeTests(unittest.TestCase):
         translator = object.__new__(translator_module.AsyncTranslator)
         translator.source_lang = "en"
         translator.engine = "MyMemory"
-        with patch.object(translator_module, "MyMemoryTranslator", FakeTranslator):
+        with patch.object(translation_module, "MyMemoryTranslator", FakeTranslator):
             translator_module.AsyncTranslator._sync_fallback(
                 translator, "Hello", "pt", 1, "MyMemory"
             )
@@ -1463,6 +1474,232 @@ class JavaJarResolutionTests(unittest.TestCase):
             result = translator_module.build_java_jar(str(source_root), output)
             self.assertEqual(result, output)
             self.assertTrue(os.path.getsize(output) > 0)
+
+
+class BrokenLineRecoveryTests(unittest.TestCase):
+    """Одна битая строка не должна Goodbye whole file (per-line recovery)."""
+
+    def _prepare(self, directory, source_text='l_english:\n KEY:0 "Hello $STATE$"\n'
+                 ' OTHER:0 "Fine"\n'):
+        source = Path(directory) / "source" / "events_l_english.yml"
+        destination = Path(directory) / "out" / "events_l_polish.yml"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(source_text, encoding="utf-8-sig")
+        return source, destination
+
+    @staticmethod
+    def _translator(transform, cache=None):
+        class FakeTranslator:
+            source_lang = "en"
+            validation_report = translator_module.ValidationReport()
+            batches = []
+
+            def __init__(self):
+                self.cache = cache
+
+            async def translate_batch(
+                self, texts, target_lang, keys=None, file_ctx="",
+                line_progress_cb=None, stop_event=None
+            ):
+                self.batches.append(list(texts))
+                return [transform(text) for text in texts]
+
+        return FakeTranslator()
+
+    def test_broken_line_blocks_the_file_by_default(self):
+        # The engine dropped the $STATE$ marker: writing this file would make
+        # the game print a broken string, so the safe mode refuses it.
+        with tempfile.TemporaryDirectory() as directory:
+            source, destination = self._prepare(directory)
+            translator = self._translator(lambda text: text.replace("$STATE$", ""))
+
+            result, logs = run_processor(source, destination, translator)
+
+            self.assertIsNone(result)
+            self.assertFalse(destination.exists())
+            self.assertTrue(
+                any("Файл не записан" in entry[0] for entry in logs), logs
+            )
+
+    def test_recovery_replaces_the_broken_line_with_the_original(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, destination = self._prepare(directory)
+            translator = self._translator(lambda text: text.replace("$STATE$", ""))
+
+            result, logs = run_processor(
+                source, destination, translator,
+                broken_line_mode=pipeline_module.BrokenLineMode.KEEP_ORIGINAL,
+            )
+
+            self.assertEqual(result, 2)
+            written = destination.read_text(encoding="utf-8-sig")
+            # The line that could not be trusted keeps its English text…
+            self.assertIn('KEY:0 "Hello $STATE$"', written)
+            # …while the healthy line next to it is still translated.
+            self.assertIn('OTHER:0 "Fine"', written)
+            self.assertTrue(
+                any("заменена оригиналом" in entry[0] for entry in logs), logs
+            )
+
+    def test_recovered_line_is_translated_again_on_the_next_run(self):
+        # Without this the English text written as a repair would be treated as
+        # a finished translation forever.
+        with tempfile.TemporaryDirectory() as directory:
+            cache = translator_module.TranslationCache(Path(directory) / "cache.db")
+            source, destination = self._prepare(directory)
+            try:
+                first = self._translator(
+                    lambda text: text.replace("$STATE$", ""), cache
+                )
+                run_processor(
+                    source, destination, first,
+                    broken_line_mode=pipeline_module.BrokenLineMode.KEEP_ORIGINAL,
+                )
+                self.assertEqual(first.batches, [["Hello $STATE$", "Fine"]])
+
+                # Second run, "Пропускать переведённое": only the repaired key
+                # may be re-translated.
+                second = self._translator(lambda text: "PL " + text, cache)
+                result, _ = run_processor(
+                    source, destination, second, skip=True,
+                    broken_line_mode=pipeline_module.BrokenLineMode.KEEP_ORIGINAL,
+                )
+                self.assertEqual(result, 1)
+                self.assertEqual(second.batches, [["Hello $STATE$"]])
+                self.assertIn(
+                    "PL Hello $STATE$", destination.read_text(encoding="utf-8-sig")
+                )
+            finally:
+                cache.close()
+
+    def test_healthy_lines_are_not_touched_by_recovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, destination = self._prepare(directory)
+            translator = self._translator(lambda text: "PL " + text)
+
+            result, logs = run_processor(
+                source, destination, translator,
+                broken_line_mode=pipeline_module.BrokenLineMode.KEEP_ORIGINAL,
+            )
+
+            self.assertEqual(result, 2)
+            self.assertFalse(
+                any("заменена оригиналом" in entry[0] for entry in logs), logs
+            )
+
+    def test_preview_that_changes_the_row_count_is_rejected_not_raised(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, destination = self._prepare(directory)
+            translator = self._translator(lambda text: "PL " + text)
+
+            result, logs = run_processor(
+                source, destination, translator, preview_cb=lambda *args: ["only one"],
+            )
+
+            self.assertIsNone(result)
+            self.assertFalse(destination.exists())
+            self.assertTrue(
+                any("Количество строк изменилось" in entry[0] for entry in logs), logs
+            )
+
+    def test_mode_labels_round_trip(self):
+        for mode, label in pipeline_module.BROKEN_LINE_MODES:
+            self.assertEqual(
+                pipeline_module.broken_line_mode_from_label(label), mode
+            )
+        self.assertEqual(
+            pipeline_module.broken_line_mode_from_label("нет такого"),
+            pipeline_module.BrokenLineMode.REJECT_FILE,
+        )
+
+
+class RunReportTests(unittest.TestCase):
+    """The run report is a file, not a line lost in the GUI log."""
+
+    def test_report_is_written_next_to_the_translation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source" / "events_l_english.yml"
+            destination = Path(directory) / "out" / "events_l_polish.yml"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text('l_english:\n KEY:0 "Hello $STATE$"\n', encoding="utf-8-sig")
+
+            translator = BrokenLineRecoveryTests._translator(
+                lambda text: text.replace("$STATE$", "")
+            )
+            report = report_module.RunReport("Google", "en", "pl", "src", "dst")
+            run_processor(
+                source, destination, translator,
+                broken_line_mode=pipeline_module.BrokenLineMode.KEEP_ORIGINAL,
+                report=report,
+            )
+            report.set_fallbacks({"DeepL→Google": 3})
+            written = report.write(str(Path(directory) / "out"))
+
+            self.assertEqual(len(written), 2)
+            json_path = next(path for path in written if path.endswith(".json"))
+            csv_path = next(path for path in written if path.endswith(".csv"))
+            payload = json.loads(Path(json_path).read_text(encoding="utf-8"))
+
+            self.assertEqual(payload["engine"], "Google")
+            self.assertEqual(payload["summary"]["files"], 1)
+            self.assertEqual(payload["summary"]["written"], 1)
+            self.assertEqual(payload["summary"]["recovered"], 1)
+            self.assertEqual(payload["summary"]["fallbacks"], 3)
+            self.assertEqual(payload["fallbacks"], {"DeepL→Google": 3})
+            self.assertEqual(
+                [row["key"] for row in payload["recovered_rows"]], ["KEY:0"]
+            )
+            self.assertTrue(any("$STATE$" in issue for issue in
+                                payload["recovered_rows"][0]["issues"]))
+            self.assertTrue(
+                Path(json_path).name.startswith("hoi4_translator_report_")
+            )
+
+            csv_text = Path(csv_path).read_text(encoding="utf-8")
+            self.assertIn("state;file;key;issues", csv_text)
+            self.assertIn("recovered;events_l_english.yml;KEY:0;", csv_text)
+
+    def test_rejected_file_appears_in_the_report_with_a_reason(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source" / "events_l_english.yml"
+            destination = Path(directory) / "out" / "events_l_polish.yml"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text('l_english:\n KEY:0 "Hello $STATE$"\n', encoding="utf-8-sig")
+
+            translator = BrokenLineRecoveryTests._translator(
+                lambda text: text.replace("$STATE$", "")
+            )
+            report = report_module.RunReport("Google", "en", "pl", "src", "dst")
+            result, _ = run_processor(source, destination, translator, report=report)
+
+            self.assertIsNone(result)
+            summary = report.summary()
+            self.assertEqual(summary["files"], 1)
+            self.assertEqual(summary["written"], 0)
+            self.assertEqual(summary["rejected"], 1)
+            self.assertIn("перевод нарушает формат", report.files[0]["message"])
+
+    def test_row_list_is_capped_but_still_counted(self):
+        report = report_module.RunReport("Google", "en", "pl", "src", "dst")
+        limit = report_module.MAX_TRACKED_ROWS
+        for index in range(limit + 7):
+            report.record_broken("events.yml", f"KEY{index}", ["плохой §"], False)
+        payload = report.to_dict()
+        self.assertEqual(len(payload["broken_rows"]), limit)
+        self.assertEqual(payload["hidden_rows"], 7)
+
+    def test_report_survives_an_unwritable_directory(self):
+        report = report_module.RunReport("Google", "en", "pl", "src", "dst")
+        report.record_file("a.yml", "b.yml", "written", translated=1)
+        # The run must not fail just because the report could not be written,
+        # and the report must not create folders of its own.
+        self.assertEqual(report.write(""), [])
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(
+                report.write(str(Path(directory) / "missing")), []
+            )
 
 
 class EntryPointTests(unittest.TestCase):

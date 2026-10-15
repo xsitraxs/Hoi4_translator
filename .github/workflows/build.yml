@@ -45,14 +45,16 @@ jobs:
           python -m pip install -r requirements.txt 'ruff==0.17.0' coverage
 
       - name: Lint
-        run: python -m ruff check hoi4_translator.py tests/
+        run: python -m ruff check hoi4_translator.py hoi4translator/ tests/
 
       - name: Compile Python
-        run: python -m py_compile hoi4_translator.py tests/test_translator_behaviour.py
+        run: |
+          python -m compileall -q hoi4translator tests hoi4_translator.py
+          python -m py_compile hoi4_translator.py tests/test_translator_behaviour.py
 
       - name: Run unit tests with coverage
         run: |
-          python -m coverage run --source=hoi4_translator -m unittest discover -s tests -v
+          python -m coverage run --source=hoi4translator -m unittest discover -s tests -v
           python -m coverage report --fail-under=40
 
       - name: Check that the release tag matches __version__
@@ -109,6 +111,7 @@ jobs:
             --onefile `
             --noconsole `
             --name "Hoi4_Translator" `
+            --collect-submodules="hoi4translator" `
             --collect-all="deep_translator" `
             --collect-all="deepl" `
             --collect-all="keyring" `
