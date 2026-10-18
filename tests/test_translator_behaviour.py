@@ -7,6 +7,7 @@ import threading
 import time
 import types
 import unittest
+from collections import Counter
 from pathlib import Path
 from unittest.mock import patch
 
@@ -841,13 +842,21 @@ class MissingPlaceholderTests(unittest.IsolatedAsyncioTestCase):
             return protected.replace("<<PH0>>", "")
 
         translator._call_engine = types.MethodType(drop_placeholder, translator)
-        result = await translator_module.AsyncTranslator.translate_text_async(
-            translator, "Protect $STATE$ now", "ru"
-        )
+        with self.assertRaises(translator_module.TranslationValidationFailed) as caught:
+            await translator_module.AsyncTranslator.translate_text_async(
+                translator, "Protect $STATE$ now", "ru"
+            )
 
-        self.assertNotIn("$STATE$", result)
+        # The token is not quietly appended to the end of the sentence…
+        self.assertNotIn("$STATE$", caught.exception.candidate)
+        # …the row is reported…
         self.assertEqual(len(translator.validation_report.broken), 1)
-        self.assertIn("потерян", ", ".join(translator.validation_report.broken[0]["issues"]))
+        self.assertIn(
+            "потерян", ", ".join(translator.validation_report.broken[0]["issues"])
+        )
+        # …and the error explains what the engines did wrong.
+        self.assertIn("потерян", str(caught.exception))
+        self.assertEqual(caught.exception.source, "Protect $STATE$ now")
 
 
 class JavaSimRoutingTests(unittest.IsolatedAsyncioTestCase):
@@ -1602,6 +1611,211 @@ class BrokenLineRecoveryTests(unittest.TestCase):
             pipeline_module.broken_line_mode_from_label("нет такого"),
             pipeline_module.BrokenLineMode.REJECT_FILE,
         )
+
+
+class BrokenTranslationFallbackTests(unittest.TestCase):
+    """A value the game cannot read is a failed attempt, not a translation.
+
+    The chain must retry such a line on the next engine — and only that line —
+    cache nothing that failed validation, and tell the pipeline when every
+    engine produced an unusable answer.
+    """
+
+    SOURCE = 'l_english:\n KEY:0 "Hello $STATE$"\n OTHER:0 "Fine"\n'
+
+    class RecordingCache:
+        """Cache stand-in that remembers what was stored (and what was not)."""
+
+        def __init__(self):
+            self.saved = []
+            self.looked_up = []
+
+        def get(self, text, source, target, engine):
+            self.looked_up.append((text, source, target, engine))
+            return
+
+        def set(self, text, value, source, target, engine):
+            self.saved.append((text, value, source, target, engine))
+
+        def get_source_hashes(self, _path):
+            return {}
+
+        def set_source_hashes(self, _path, hashes):
+            self.hashes = hashes
+
+        def close(self):
+            pass
+
+    def _prepare(self, directory, source_text=None):
+        source = Path(directory) / "source" / "events_l_english.yml"
+        destination = Path(directory) / "out" / "events_l_polish.yml"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(source_text or self.SOURCE, encoding="utf-8-sig")
+        return source, destination
+
+    @staticmethod
+    def _answers(drop_marker_on=("Google",)):
+        """Translation answers: the listed engines lose the game marker."""
+
+        def answers(engine, protected):
+            translated = {
+                "Hello <<PH0>>": "Witaj <<PH0>>",
+                "Fine": "Dobrze",
+            }.get(protected, "??")
+            if engine in drop_marker_on and "<<PH" in protected:
+                return translated.split("<<")[0].strip()
+            return translated
+
+        return answers
+
+    def _translator(self, answers, cache):
+        """A real AsyncTranslator whose engines are replaced by `answers`."""
+        translator = object.__new__(translator_module.AsyncTranslator)
+        translator.engine = "Google"
+        translator.api_key = None
+        translator.source_lang = "en"
+        translator.session = None
+        translator.concurrency = 2
+        translator.reuse_fallback_cache = False
+        translator.fallback_notifier = None
+        translator.fallback_counts = {}
+        translator._deepl_client = None
+        translator._deepl_lock = threading.Lock()
+        translator.java_service = None
+        # Built on the loop that will run the batch: asyncio primitives are
+        # bound to a loop on Python 3.9.
+        translator._semaphore = asyncio.Semaphore(2)
+        translator.validation_report = translator_module.ValidationReport()
+        translator.cache = cache or self.RecordingCache()
+        calls = []
+
+        async def fake_engine(self, engine, protected, target, retries):
+            calls.append((engine, protected))
+            return answers(engine, protected)
+
+        translator._call_engine = types.MethodType(fake_engine, translator)
+        translator.calls = calls
+        return translator
+
+    def _process(self, source, destination, answers, cache=None, **kwargs):
+        """Run the real pipeline on the real translator in its own loop."""
+        loop = asyncio.new_event_loop()
+        loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
+        loop_thread.start()
+        logs = []
+
+        async def build():
+            return self._translator(answers, cache or self.RecordingCache())
+
+        try:
+            translator = asyncio.run_coroutine_threadsafe(build(), loop).result(timeout=5)
+            result = translator_module.process_file_sync(
+                str(source), str(destination), translator,
+                lambda *entry: logs.append(entry),
+                skip_translated=kwargs.get("skip", False),
+                stop_event=threading.Event(), loop=loop, target_lang="pl",
+                broken_line_mode=kwargs.get("broken_line_mode")
+                or pipeline_module.BrokenLineMode.REJECT_FILE,
+            )
+            return translator, result, logs
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            loop_thread.join(timeout=2)
+            loop.close()
+
+    def test_broken_translation_is_retried_on_the_next_engine(self):
+        # Google loses $STATE$, MyMemory keeps it: the file must end up with a
+        # translation the game can print.
+        with tempfile.TemporaryDirectory() as directory:
+            source, destination = self._prepare(directory)
+            translator, result, logs = self._process(
+                source, destination, self._answers()
+            )
+
+            self.assertEqual(result, 2, logs)
+            written = destination.read_text(encoding="utf-8-sig")
+            self.assertIn('KEY:0 "Witaj $STATE$"', written)
+            self.assertIn('OTHER:0 "Dobrze"', written)
+            # The substitution is counted, so the UI can report it.
+            self.assertEqual(translator.fallback_counts, {"Google → MyMemory": 1})
+
+    def test_every_engine_broken_means_the_file_is_not_written(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, destination = self._prepare(directory)
+            translator, result, logs = self._process(
+                source, destination, self._answers(drop_marker_on=("Google", "MyMemory"))
+            )
+
+            self.assertIsNone(result)
+            self.assertFalse(destination.exists(), "битый перевод попал в файл")
+            self.assertTrue(any("Файл не записан" in entry[0] for entry in logs), logs)
+            self.assertTrue(
+                any("потерян" in entry[0] for entry in logs), logs
+            )
+            self.assertEqual(len(translator.validation_report.broken), 1)
+            self.assertEqual(translator.validation_report.broken[0]["key"], "KEY:0")
+
+    def test_unusable_translation_never_reaches_the_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, destination = self._prepare(directory)
+            cache = self.RecordingCache()
+            self._process(
+                source, destination,
+                self._answers(drop_marker_on=("Google", "MyMemory")),
+                cache=cache,
+            )
+
+            # The healthy line is cached; the line no engine could translate
+            # is not — a second run must not reuse it.
+            self.assertNotIn(
+                "Hello $STATE$", [entry[0] for entry in cache.saved], cache.saved
+            )
+            self.assertIn("Fine", [entry[0] for entry in cache.saved], cache.saved)
+
+    def test_the_answer_that_passed_validation_is_cached_under_its_engine(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, destination = self._prepare(directory)
+            cache = self.RecordingCache()
+            self._process(source, destination, self._answers(), cache=cache)
+
+            self.assertIn(
+                ("Hello $STATE$", "Witaj $STATE$", "en", "pl", "MyMemory"),
+                cache.saved,
+            )
+
+    def test_only_the_broken_line_is_retranslated(self):
+        # Repairing one line must not cost extra requests for its healthy
+        # neighbours: those are translated exactly once.
+        with tempfile.TemporaryDirectory() as directory:
+            source, destination = self._prepare(directory)
+            translator, result, _logs = self._process(
+                source, destination, self._answers()
+            )
+
+            self.assertEqual(result, 2)
+            attempts = Counter(protected for _engine, protected in translator.calls)
+            self.assertEqual(attempts["Hello <<PH0>>"], 2)  # Google, then MyMemory
+            self.assertEqual(attempts["Fine"], 1)
+
+    def test_recovery_mode_keeps_the_original_for_a_line_no_engine_could_fix(self):
+        # The strict mode refuses the file; the recovery mode still writes it
+        # with the English text for the one line that could not be trusted.
+        with tempfile.TemporaryDirectory() as directory:
+            source, destination = self._prepare(directory)
+            translator, result, logs = self._process(
+                source, destination,
+                self._answers(drop_marker_on=("Google", "MyMemory")),
+                broken_line_mode=pipeline_module.BrokenLineMode.KEEP_ORIGINAL,
+            )
+
+            self.assertEqual(result, 2)
+            written = destination.read_text(encoding="utf-8-sig")
+            self.assertIn('KEY:0 "Hello $STATE$"', written)
+            self.assertIn('OTHER:0 "Dobrze"', written)
+            self.assertTrue(
+                any("заменена оригиналом" in entry[0] for entry in logs), logs
+            )
 
 
 class RunReportTests(unittest.TestCase):

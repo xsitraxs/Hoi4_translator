@@ -104,6 +104,18 @@ def validate_pairs(originals: List[str], translations: List[str]) -> List[List[s
     return rows
 
 
+def validate_line(original: str, translated: str) -> List[str]:
+    """Issues of one translated value; an empty list means it can be written.
+
+    Translating a single line needs the same verdict as the batch form, but
+    without building throwaway one-element lists around it.
+    """
+    try:
+        return validate_pairs([original], [translated])[0]
+    except ValueError as error:
+        return [str(error)]
+
+
 def validate_preview_translations(originals: List[str], translations: List[str]) -> List[str]:
     """Return preview rows that break the one-line value format or game tokens."""
     try:

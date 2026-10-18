@@ -37,7 +37,11 @@ from .config import (
     atomic_write_text,
     logger,
 )
-from .errors import TranslationCancelled, TranslationFailed
+from .errors import (
+    TranslationCancelled,
+    TranslationFailed,
+    TranslationValidationFailed,
+)
 from .java_service import (
     JAVA_OK,
     JavaTranslatorService,
@@ -106,7 +110,7 @@ __all__ = [
     # logging and io
     "logger", "atomic_write_lines", "atomic_write_text",
     # errors
-    "TranslationCancelled", "TranslationFailed",
+    "TranslationCancelled", "TranslationFailed", "TranslationValidationFailed",
     # localisation
     "HOI4_LANGUAGE_NAMES", "HOI4_LANGUAGE_NAMES_BY_CODE", "HOI4_TARGET_LANGS",
     "PLACEHOLDER_RE", "VALUE_RE", "collect_yml_files", "get_hoi4_language_name",
