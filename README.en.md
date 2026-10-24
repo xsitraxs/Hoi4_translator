@@ -21,28 +21,38 @@ Point the tool at a mod's `localisation` folder, pick a target language and an e
 | `hoi4_translator.jar` | JavaSim engine, put it next to the EXE (needs Java 11+) |
 | From source | Python 3.9+, `pip install -r requirements.txt`, then `python hoi4_translator.py` |
 
-![HoI4 Translator main window, dark theme](docs/images/main-window-dark.png)
+![HoI4 Translator main window](docs/images/main-window-dark.png)
 
-<!--
-Still to capture in docs/images/, then uncomment:
+### What the output looks like
 
-![Light theme](docs/images/main-window-light.png)
-![Translation preview](docs/images/preview.png)
-![Demo](docs/images/demo.gif)
--->
+Keys are never touched and markers survive — only the text changes:
+
+```yml
+# before (en)
+l_english:
+ GER_rearm_the_rhine:0 "Rearm $STATE$ with £army_experience|1 and [GetPlayerTag] backing."
+ USA_war_goal_ussr:0 "§YDeclare war§! on $TARGET$ and gain §G+10%§! war support."
+
+# after (ru)
+l_russian:
+ GER_rearm_the_rhine:0 "Перевооружите $STATE$ с помощью £army_experience|1 и поддержки [GetPlayerTag]."
+ USA_war_goal_ussr:0 "§YОбъявите войну§! государству $TARGET$ и получите §G+10%§! поддержки войны."
+```
+
+If an engine mangles a single marker, the line is reported, and by default the whole file is not written at all.
 
 ## 🔒 Is the EXE safe to run?
 
 Antivirus and SmartScreen warnings on PyInstaller builds are normal, but you should still verify:
 
 * **Where it came from.** The EXE is built by GitHub Actions from this repository; each release notes which CI run produced it.
-* **Checksum.** Every release lists a SHA256 — check it locally:
+* **Checksum.** Releases ship a `SHA256SUMS.txt` with the hashes of the EXE and the JAR — check it locally:
   ```powershell
   certutil -hashfile Hoi4_Translator.exe SHA256
   ```
-  or `sha256sum` / `shasum -a 256` on Linux/macOS.
+  or `sha256sum -c SHA256SUMS.txt` on Linux/macOS.
 * **SmartScreen.** The binary is not code-signed (that costs money), so Windows will warn you: "More info" → "Run anyway".
-* **VirusTotal.** The release notes link a scan report for that exact build.
+* **VirusTotal.** If the release notes link a scan report, check the file there; running from source needs none of this.
 * **No trust in binaries at all.** MIT source is right here — run it with Python 3.9+ instead.
 
 ## ✨ What it does

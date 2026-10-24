@@ -28,24 +28,36 @@
 Антивирусы и SmartScreen иногда ругаются на сборки PyInstaller — это ожидаемо, но проверять всё равно нужно:
 
 * **Откуда файл.** EXE собирается GitHub Actions из открытого кода; ссылка на конкретный прогон CI указана в описании релиза.
-* **Контрольная сумма.** В описании каждого релиза есть SHA256. Сверьте локально:
+* **Контрольная сумма.** К релизу прикладывается `SHA256SUMS.txt` с хешами EXE и JAR. Сверьте локально:
   ```powershell
   certutil -hashfile Hoi4_Translator.exe SHA256
   ```
-  В Linux/macOS: `sha256sum` / `shasum -a 256`.
+  В Linux/macOS: `sha256sum -c SHA256SUMS.txt`. Если файла в релизе нет (старые версии), команда выше посчитает хеш, а сверить его можно с записью в описании релиза.
 * **SmartScreen.** Файл не подписан сертификатом (это платно), поэтому Windows покажет «Windows защитила ваш компьютер»: «Подробнее» → «Выполнить в любом случае».
-* **VirusTotal.** Ссылка на отчёт по конкретному релизу — в описании релиза.
+* **VirusTotal.** Если ссылка на отчёт есть в описании релиза — проверьте файл там; для сборок, запущенных из исходников, это не требуется.
 * **Совсем без доверия к бинарнику.** Код открыт под MIT — запустите из исходников (Python 3.9+), результат будет тот же.
 
-![Главное окно HoI4 Translator в тёмной теме](docs/images/main-window-dark.png)
+![Главное окно HoI4 Translator](docs/images/main-window-dark.png)
 
-<!--
-Осталось снять и положить в docs/images/, после чего раскомментировать:
+### Как выглядит результат
 
-![Светлая тема](docs/images/main-window-light.png)
-![Предпросмотр перевода](docs/images/preview.png)
-![Демонстрация перевода](docs/images/demo.gif)
--->
+Ключи не трогаются, маркеры остаются на месте — меняется только текст:
+
+```yml
+# было (en)
+l_english:
+ GER_rearm_the_rhine:0 "Rearm $STATE$ with £army_experience|1 and [GetPlayerTag] backing."
+ USA_war_goal_ussr:0 "§YDeclare war§! on $TARGET$ and gain §G+10%§! war support."
+ GER_day_of_infamy:0 "Our diplomats call it \"an incident\".\nThe press calls it war."
+
+# стало (ru)
+l_russian:
+ GER_rearm_the_rhine:0 "Перевооружите $STATE$ с помощью £army_experience|1 и поддержки [GetPlayerTag]."
+ USA_war_goal_ussr:0 "§YОбъявите войну§! государству $TARGET$ и получите §G+10%§! поддержки войны."
+ GER_day_of_infamy:0 "Наши дипломаты называют это \"инцидентом\".\nПресса называет это войной."
+```
+
+Если движок испортит хотя бы один маркер, строка попадёт в отчёт, а файл по умолчанию не запишется вовсе.
 
 ---
 
