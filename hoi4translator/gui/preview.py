@@ -26,10 +26,9 @@ class PreviewWindow(ctk.CTkToplevel):
                  on_accept, on_cancel, palette: Optional[theme.Palette] = None):
         super().__init__(parent)
         self._palette = palette if palette is not None else theme.resolve(None)
-        p = self._palette
 
         self.title(f"Предпросмотр — {os.path.basename(filename)}")
-        self.configure(fg_color=p.bg)
+        self.configure(fg_color=theme.color('bg'))
         self.resizable(True, True)
         self.minsize(940, 560)
 
@@ -66,14 +65,13 @@ class PreviewWindow(ctk.CTkToplevel):
             raise
 
     def _build(self, filename, originals, translations):
-        p = self._palette
 
         # Заголовок
-        hdr = ctk.CTkFrame(self, corner_radius=0, fg_color=p.panel, height=54)
+        hdr = ctk.CTkFrame(self, corner_radius=0, fg_color=theme.color('panel'), height=54)
         hdr.pack(fill='x')
         ctk.CTkLabel(
             hdr, text=f"Предпросмотр: {os.path.basename(filename)}",
-            font=theme.font(15, "bold"), text_color=p.accent,
+            font=theme.font(15, "bold"), text_color=theme.color('accent'),
         ).pack(side='left', padx=18, pady=12)
         shown = min(len(originals), self.MAX_PREVIEW_ROWS)
         count_text = (
@@ -81,7 +79,7 @@ class PreviewWindow(ctk.CTkToplevel):
             if shown < len(originals) else f"{len(originals)} строк"
         )
         ctk.CTkLabel(
-            hdr, text=count_text, font=theme.font(12), text_color=p.fg_muted
+            hdr, text=count_text, font=theme.font(12), text_color=theme.color('fg_muted')
         ).pack(side='right', padx=18, pady=12)
 
         # Заголовки колонок
@@ -89,16 +87,16 @@ class PreviewWindow(ctk.CTkToplevel):
         columns.pack(fill='x', padx=18, pady=(12, 4))
         ctk.CTkLabel(
             columns, text="Оригинал", font=theme.font(12, "bold"),
-            text_color=p.info, anchor='w',
+            text_color=theme.color('info'), anchor='w',
         ).pack(side='left', fill='x', expand=True, padx=(0, 6))
         ctk.CTkLabel(
             columns, text="Перевод (можно редактировать)",
-            font=theme.font(12, "bold"), text_color=p.success, anchor='w',
+            font=theme.font(12, "bold"), text_color=theme.color('success'), anchor='w',
         ).pack(side='left', fill='x', expand=True, padx=(6, 0))
 
         # Прокручиваемая таблица
         table = ctk.CTkScrollableFrame(
-            self, corner_radius=10, label_text="", fg_color=p.panel
+            self, corner_radius=10, label_text="", fg_color=theme.color('panel')
         )
         table.pack(fill='both', expand=True, padx=18, pady=4)
 
@@ -115,7 +113,7 @@ class PreviewWindow(ctk.CTkToplevel):
             ctk.CTkLabel(
                 row, text=f"{number + 1}. {orig[:160]}"
                           f"{'…' if len(orig) > 160 else ''}",
-                font=theme.font(12, mono=True), text_color=p.fg_muted,
+                font=theme.font(12, mono=True), text_color=theme.color('fg_muted'),
                 anchor='w', justify='left',
             ).pack(side='left', fill='x', expand=True, padx=(0, 6))
 
@@ -129,25 +127,26 @@ class PreviewWindow(ctk.CTkToplevel):
         ctk.CTkLabel(
             self,
             text="💡 Отредактируй любую строку перевода, затем нажми «Сохранить»",
-            font=theme.font(12), text_color=p.fg_subtle,
+            font=theme.font(12), text_color=theme.color('fg_subtle'),
         ).pack(pady=(6, 2))
 
         # Кнопки
-        btn_frame = ctk.CTkFrame(self, corner_radius=0, fg_color=p.panel, height=60)
+        btn_frame = ctk.CTkFrame(self, corner_radius=0, fg_color=theme.color('panel'), height=60)
         btn_frame.pack(fill='x')
         ctk.CTkButton(
             btn_frame, text="✔ Сохранить и записать файл", height=34,
-            fg_color=p.accent, hover_color=p.accent_hover, text_color=p.on_accent,
+            fg_color=theme.color('accent'), hover_color=theme.color('accent_hover'),
+            text_color=theme.color('on_accent'),
             font=theme.font(13, "bold"), command=self._accept,
         ).pack(side='left', padx=18, pady=13)
         ctk.CTkButton(
             btn_frame, text="✘ Отмена (не записывать)", height=34,
-            fg_color=p.panel_alt, hover_color=p.border, font=theme.font(12),
+            fg_color=theme.color('panel_alt'), hover_color=theme.color('border'), font=theme.font(12),
             command=self._cancel,
         ).pack(side='left', pady=13)
         ctk.CTkLabel(
             btn_frame, text=f"Файл: {os.path.basename(filename)}",
-            font=theme.font(12), text_color=p.fg_subtle,
+            font=theme.font(12), text_color=theme.color('fg_subtle'),
         ).pack(side='right', padx=18, pady=13)
 
     def _accept(self):

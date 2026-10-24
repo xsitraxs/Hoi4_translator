@@ -127,10 +127,24 @@ def install_theme() -> None:
     ctk.set_default_color_theme(theme_file())
 
 
+def color(role: str) -> tuple:
+    """Return the `(light, dark)` pair for a palette role.
+
+    CustomTkinter resolves a tuple against the current appearance mode and
+    re-resolves it on every switch, so a widget built with ``theme.color("panel")``
+    follows the theme forever. A single colour string is frozen at construction
+    time: that is how the header and the bottom buttons used to stay dark in the
+    light theme.
+    """
+    if role not in Palette.__dataclass_fields__:
+        raise KeyError(f"Нет такого цвета в палитре: {role}")
+    return (getattr(LIGHT, role), getattr(DARK, role))
+
+
 def apply(root, palette: Palette) -> None:
     """Switch the whole application to `palette`."""
     ctk.set_appearance_mode(palette.name)
-    root.configure(fg_color=palette.bg)
+    root.configure(fg_color=color("bg"))
 
 
 def font(size: int = 13, weight: Optional[str] = None, mono: bool = False) -> "ctk.CTkFont":

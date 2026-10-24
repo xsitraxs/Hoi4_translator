@@ -10,6 +10,9 @@ import sys
 import types
 
 CALLS = []
+#: ``(class name, kwargs)`` for every widget built, so tests can inspect the
+#: options a widget was created with (colours, sizes) without a display.
+CREATED = []
 
 
 class _Var:
@@ -43,6 +46,7 @@ class Widget:
         self.kwargs = kwargs
         self._name = type(self).__name__
         CALLS.append((self._name, kwargs.get("text", kwargs.get("textvariable", ""))))
+        CREATED.append((self._name, kwargs))
 
     # geometry managers and common widget API
     def pack(self, **kw):

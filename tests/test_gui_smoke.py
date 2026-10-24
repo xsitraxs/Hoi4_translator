@@ -184,6 +184,51 @@ class GuiBuildTests(unittest.TestCase):
         app._update_line_progress(2, 4)
         self.assertEqual(app.progress_lines.kwargs["value"], 0.5)
 
+    def test_widget_colours_follow_the_theme_instead_of_freezing(self):
+        """A colour passed as one string is frozen at construction.
+
+        That is how the header and the bottom buttons stayed dark after a
+        switch to the light theme: the widget kept the old palette's colour.
+        CustomTkinter resolves a ``(light, dark)`` tuple on every switch, so
+        every colour a widget is built with must be such a pair.
+        """
+        tk_stub.CREATED.clear()
+        app = self._app()
+        self.assertTrue(app is not None and tk_stub.CREATED, "виджеты не собраны")
+
+        colour_options = (
+            "fg_color", "text_color", "hover_color", "border_color",
+            "progress_color", "button_color", "button_hover_color",
+            "checkmark_color", "placeholder_text_color", "dropdown_fg_color",
+            "dropdown_text_color", "label_text_color",
+        )
+        frozen = []
+        for widget, kwargs in tk_stub.CREATED:
+            for option in colour_options:
+                value = kwargs.get(option)
+                if value is None or isinstance(value, tuple):
+                    continue
+                if value == "transparent":
+                    continue
+                # The log is a Tk text widget: it is repainted by
+                # _refresh_log_colors because Tk has no appearance modes.
+                if widget == "CTkTextbox":
+                    continue
+                frozen.append((widget, option, value))
+        self.assertEqual(
+            frozen, [],
+            f"цвета заданы строкой и не переключатся с темой: {frozen}",
+        )
+
+    def test_every_palette_role_can_be_used_as_a_theme_pair(self):
+        for role in theme.Palette.__dataclass_fields__:
+            if role in {"name", "label"}:
+                continue
+            pair = theme.color(role)
+            self.assertEqual(pair, (getattr(theme.LIGHT, role), getattr(theme.DARK, role)))
+        with self.assertRaises(KeyError):
+            theme.color("нет_такого_цвета")
+
     def test_report_helper_still_works_after_a_restyle(self):
         from hoi4translator.report import RunReport
 
