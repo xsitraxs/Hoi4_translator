@@ -1,6 +1,34 @@
 # 🌍 HoI4 Localization Tool
 
-Автоматизированный инструмент для пакетного перевода файлов локализации Hearts of Iron IV (.yml) с сохранением структуры и игровых маркеров.
+[![Последний релиз](https://img.shields.io/github/v/release/xsitraxs/Hoi4_translator?label=release)](https://github.com/xsitraxs/Hoi4_translator/releases/latest)
+[![Скачиваний](https://img.shields.io/github/downloads/xsitraxs/Hoi4_translator/total)](https://github.com/xsitraxs/Hoi4_translator/releases)
+[![Тесты](https://github.com/xsitraxs/Hoi4_translator/actions/workflows/build.yml/badge.svg)](https://github.com/xsitraxs/Hoi4_translator/actions/workflows/build.yml)
+[![Лицензия](https://img.shields.io/github/license/xsitraxs/Hoi4_translator)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org)
+
+**Перевод модов Hearts of Iron IV пачкой, а не руками.** Инструмент проходит по `.yml`-файлам локализации, переводит только значения (ключи остаются как есть) и не ломает разметку Paradox: `$VALUE$`, `§R…§!`, `£money`, `[GetTag]`, `\n`. Перед записью каждый файл проверяется — сломанный перевод не попадёт в игру.
+
+**Читать на других языках:** [English](README.en.md)
+
+---
+
+### ⬇️ Скачать
+
+| Что | Кому |
+| --- | --- |
+| **[Hoi4_Translator.exe](https://github.com/xsitraxs/Hoi4_translator/releases/latest)** | Windows, ничего устанавливать не нужно — просто запустить |
+| `hoi4_translator.jar` | Движок JavaSim, кладётся рядом с EXE (нужна Java 11+) |
+| Из исходников | Python 3.9+, `pip install -r requirements.txt`, затем `python hoi4_translator.py` |
+
+Инструкция по установке, настройке папок и кэшу — ниже, в разделе «📦 Установка и запуск».
+Нашли ошибку или нужен движок перевода — [Issues](https://github.com/xsitraxs/Hoi4_translator/issues) и [Discussions](https://github.com/xsitraxs/Hoi4_translator/discussions).
+
+<!--
+Скриншоты и GIF кладутся в docs/images/, после чего раскомментировать:
+
+![Главное окно](docs/images/main-window.png)
+![Предпросмотр перевода](docs/images/preview.png)
+-->
 
 ---
 
