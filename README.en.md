@@ -60,6 +60,9 @@ Antivirus and SmartScreen warnings on PyInstaller builds are normal, but you sho
 * **Engines:** DeepL (official client, API key stored in the OS credential store), Google Translate, MyMemory, and an optional Java engine (JavaSim).
 * **Fallback chain:** `DeepL → Google → MyMemory`. Every substitution is logged and counted in the summary, so a paid engine never degrades to a free one silently.
 * **Placeholder protection:** variables, formatters, colour codes, gradients, icons and escape sequences are masked before translating and restored afterwards.
+* **Glossary:** a `term → translation` file (TSV/CSV/JSON). Terms are masked out before the request and written back already translated, so an engine cannot translate them differently or reorder them. See [`docs/glossary-example.tsv`](docs/glossary-example.tsv).
+* **Vanilla reuse:** point it at the installed game's `localisation` folder and any line the mod copied from the base game takes the official translation — those lines never reach an engine.
+* **Headless CLI:** `python hoi4_translator.py --cli --src ... --dst ... --target ru` for CI and servers without a display.
 * **Line-level validation:** if a translation loses a marker, the file is not written by default (`Do not write the file`) — alternatively the broken line can be replaced with the English original and reported.
 * **Cache:** SQLite. A key is `text + language pair + engine`, so switching engines does not serve stale results. "Skip already translated" also stores a checksum of the source line, so a mod author's edit invalidates the old translation.
 * **Preview:** the first 1000 lines of each file can be reviewed and edited before saving.
@@ -82,6 +85,19 @@ python -m pip install -r requirements.txt
 python hoi4_translator.py        # --help / --version also work
 ```
 
+## 🖥 Headless mode
+
+```bash
+python hoi4_translator.py --cli \
+  --src "MOD/localisation/english" \
+  --dst "OUT/localisation/russian" \
+  --target ru --engine Google \
+  --glossary docs/glossary-example.tsv \
+  --vanilla "C:/Steam/steamapps/common/Hearts of Iron IV/localisation"
+```
+
+Useful flags: `--skip-translated`, `--broken-lines keep-original`, `--concurrency N`, `--no-report`, `--quiet`; `--cli --help` lists everything. Exit codes: `0` all files written, `1` at least one file failed, `2` bad arguments or folders (nothing started).
+
 ## 📁 Choosing folders
 
 Use the **same root level** for source and destination. If the source is a mod root, the output must be another mod root. If the source is the `localisation` folder, pick an output `localisation` root. The tool keeps the relative structure and swaps the language folder/suffix for the target language.
@@ -92,6 +108,7 @@ Use the **same root level** for source and destination. If the source is a mod r
 * MyMemory has hard daily limits — it is the last resort in the chain.
 * The preview window covers the first 1000 lines; the rest is saved as translated.
 * The GUI is currently Russian-only.
+* A glossary disables the translation cache: the cache is keyed by source text, and a different glossary would silently answer with a translation made under another term list.
 
 ## 👩‍💻 Development
 

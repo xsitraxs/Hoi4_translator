@@ -143,8 +143,12 @@ USAGE = f"""Hoi4 Translator v{__version__}
 
 Использование:
   hoi4_translator.py            запустить графический интерфейс
+  hoi4_translator.py --cli ...  перевод без интерфейса (см. --cli --help)
   hoi4_translator.py --help     показать эту справку
   hoi4_translator.py --version  показать версию
+
+Пример без интерфейса:
+  hoi4_translator.py --cli --src MOD/localisation/english --dst OUT --target ru
 
 Каталог данных (кэш, настройки, лог): {APP_DATA_DIR}
 """
@@ -153,6 +157,12 @@ USAGE = f"""Hoi4 Translator v{__version__}
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Entry point. --help/--version exit before Tk is imported."""
     arguments = list(sys.argv[1:] if argv is None else argv)
+    if "--cli" in arguments:
+        # The CLI owns --help/--version and its own argument list; --cli is the
+        # only switch this entry point removes.
+        from .cli import main as cli_main
+
+        return cli_main([arg for arg in arguments if arg != "--cli"])
     if "--help" in arguments or "-h" in arguments:
         print(USAGE)
         return 0

@@ -24,6 +24,7 @@ from ..config import (
     deepl,  # noqa: F401  (re-exported for the GUI)
     logger,
 )
+from ..glossary import GlossaryError, load_glossary
 from ..java_service import JAVA_OK, resolve_java_jar
 from ..localisation import (
     HOI4_LANGUAGE_NAMES_BY_CODE,
@@ -51,6 +52,7 @@ from ..settings import (
 )
 from ..storage import TranslationCache
 from ..translation import AsyncTranslator
+from ..vanilla import build_vanilla_index
 from . import theme
 from .preview import PreviewWindow
 
@@ -93,6 +95,8 @@ class App(ctk.CTk):
 
         self._stop_event = threading.Event()
         self.java_jar_var = tk.StringVar(value="")  # Путь к JAR
+        self.glossary_var = tk.StringVar(value="")  # Файл глоссария
+        self.vanilla_var = tk.StringVar(value="")   # Папка localisation игры
 
         # FIX: один async event loop на весь сеанс, запускается в фоновом потоке
         self._async_loop = asyncio.new_event_loop()
@@ -195,6 +199,30 @@ class App(ctk.CTk):
             self.geometry(f"{width}x{height}+{x}+{y}")
         except Exception:
             logger.debug("Could not centre the window", exc_info=True)
+
+    def _quality_row(self, parent, label, variable, command, placeholder):
+        row = ctk.CTkFrame(parent, fg_color='transparent')
+        row.pack(fill='x', pady=(10, 0))
+        ctk.CTkLabel(row, text=label, width=112, anchor='w').pack(side='left')
+        ctk.CTkEntry(
+            row, textvariable=variable, placeholder_text=placeholder
+        ).pack(side='left', fill='x', expand=True, padx=8)
+        ctk.CTkButton(row, text="Обзор", width=92, command=command).pack(side='left')
+
+    def browse_glossary(self):
+        path = filedialog.askopenfilename(
+            title="Выберите файл глоссария",
+            filetypes=[("Глоссарий", "*.tsv *.csv *.txt *.json"), ("Все файлы", "*.*")],
+        )
+        if path:
+            self.glossary_var.set(path)
+
+    def browse_vanilla(self):
+        path = filedialog.askdirectory(
+            title="Выберите папку localisation установленной игры"
+        )
+        if path:
+            self.vanilla_var.set(path)
 
     def browse_jar(self):
         f = filedialog.askopenfilename(title="Выберите hoi4_translator.jar", filetypes=[("JAR files", "*.jar")])
@@ -409,6 +437,12 @@ class App(ctk.CTk):
         ctk.CTkCheckBox(
             checks, text="Предпросмотр перед записью", variable=self.preview_var
         ).pack(side='left')
+
+        self._quality_row(options, "Глоссарий:", self.glossary_var, self.browse_glossary,
+                          "термины, которые нельзя переводить иначе (TSV/CSV/JSON)")
+        self._quality_row(options, "Ваниль:", self.vanilla_var, self.browse_vanilla,
+                          "папка localisation игры: готовые официальные переводы "
+                          "берутся вместо машинных")
 
         cache_row = ctk.CTkFrame(options, fg_color='transparent')
         cache_row.pack(fill='x', pady=(10, 0))
@@ -767,6 +801,10 @@ class App(ctk.CTk):
             self.reuse_fallback_cache_var.set(s['reuse_fallback_cache'])
         if s.get('java_jar'):
             self.java_jar_var.set(s['java_jar'])
+        if s.get('glossary'):
+            self.glossary_var.set(s['glossary'])
+        if s.get('vanilla'):
+            self.vanilla_var.set(s['vanilla'])
         if s.get('broken_lines'):
             # An unknown label falls back to the safe mode.
             self.broken_line_var.set(
@@ -816,6 +854,8 @@ class App(ctk.CTk):
             'preview': self.preview_var.get(),
             'reuse_fallback_cache': self.reuse_fallback_cache_var.get(),
             'java_jar': self.java_jar_var.get(),
+            'glossary': self.glossary_var.get(),
+            'vanilla': self.vanilla_var.get(),
             'broken_lines': self.broken_line_var.get(),
         })
 
@@ -952,6 +992,8 @@ class App(ctk.CTk):
             'concurrency': int(self.semaphore_var.get()),
             'reuse_fallback_cache': self.reuse_fallback_cache_var.get(),
             'broken_lines': self.broken_line_var.get(),
+            'glossary': self.glossary_var.get().strip(),
+            'vanilla': self.vanilla_var.get().strip(),
         }
         self._save_current_settings()
 
@@ -979,6 +1021,18 @@ class App(ctk.CTk):
         broken_line_mode = broken_line_mode_from_label(
             config.get('broken_lines', '')
         )
+        glossary = None
+        if config.get('glossary'):
+            try:
+                glossary = load_glossary(config['glossary'])
+                self.log_line(
+                    f"Глоссарий: {glossary.origin}, терминов: {len(glossary)}", 'info'
+                )
+            except GlossaryError as error:
+                self.log_line(f"Глоссарий не загружен: {error}", 'error')
+                self._post_ui(self.status_var.set, "Глоссарий не загружен")
+                return
+
         report = report_module.RunReport(engine_name, source_ln, target_ln, src, dst)
         report_written = False
 
@@ -1022,10 +1076,16 @@ class App(ctk.CTk):
                 self._post_ui(self.status_var.set, "JavaSim недоступен")
                 return
 
+            vanilla = build_vanilla_index(
+                config.get('vanilla'), source_ln, target_ln,
+                log_cb=lambda message, tag=None: self.log_line(message, tag or 'info'),
+            )
+
             translator = AsyncTranslator(
                 engine_name, api_key=key, source_lang=source_ln, java_jar_path=jar_path,
                 concurrency=concurrency, reuse_fallback_cache=reuse_fallback_cache,
                 fallback_notifier=self._note_fallback_engine,
+                glossary=glossary,
             )
             asyncio.run_coroutine_threadsafe(
                 translator.__aenter__(), self._async_loop
@@ -1107,6 +1167,7 @@ class App(ctk.CTk):
                         line_progress_cb=make_line_cb(), preview_cb=preview_cb,
                         broken_line_mode=broken_line_mode, report=report,
                         report_label=rel,
+                    vanilla=vanilla,
                     )
                     processed_files = i + 1
                     if count is FileProcessStatus.PREVIEW_CANCELLED:

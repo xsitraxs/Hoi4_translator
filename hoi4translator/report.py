@@ -44,7 +44,7 @@ class RunReport:
 
     def record_file(self, source: str, destination: str, status: str, *,
                     translated: int = 0, skipped: int = 0, stale: int = 0,
-                    recovered: int = 0, broken: int = 0,
+                    recovered: int = 0, broken: int = 0, reused: int = 0,
                     message: str = "") -> None:
         self.files.append({
             "source": source,
@@ -55,6 +55,7 @@ class RunReport:
             "stale": stale,
             "recovered": recovered,
             "broken": broken,
+            "reused": reused,
             "message": message,
         })
 
