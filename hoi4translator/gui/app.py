@@ -201,28 +201,26 @@ class App(ctk.CTk):
         """
         save_settings({**load_settings(), "theme": self._theme_name})
 
-    def _set_window_alpha(self, value: float) -> None:
-        """Make the window fully transparent for the duration of a restyle.
+    def _paint_background(self, colour: str) -> None:
+        """Fill the window with `colour` now, before the widgets are restyled.
 
-        ``withdraw``/``deiconify`` would work too, but they flicker in the
-        taskbar and can drop a maximised window back to its normal size. Alpha
-        leaves the window where it is. Platforms without compositing raise
-        ``TclError`` — then the switch simply looks the way it did before.
+        Restyling ~80 CustomTkinter widgets happens inside one Tk callback, and
+        Tk cannot serve paint events until it returns. Whatever is on screen
+        during that time is the last thing Tk managed to draw. Painting the
+        target background first means the gap shows the colour the window is
+        about to become, instead of a bare white frame.
         """
-        try:
-            self.attributes("-alpha", value)
-        except tk.TclError:
-            logger.debug("Window transparency is not supported here", exc_info=True)
+        self.configure(fg_color=colour)
+        self.update_idletasks()
 
     def _toggle_theme(self) -> None:
-        """Switch the palette without leaving a blank window behind.
+        """Switch the palette while the window stays on screen.
 
-        Restyling ~80 CustomTkinter widgets runs entirely on the Tk thread, and
-        every one of them redraws its own canvas. Windows cannot repaint the
-        window until the handler returns, so the user stares at an empty frame
-        for the whole switch. Hide the window for the duration and let Tk
-        breathe on both sides; the work itself is unchanged, only what is on
-        screen while it happens.
+        Hiding the window (``-alpha 0`` or ``withdraw``) for the duration makes
+        the switch look like the application restarting, so it must not be
+        done. Instead the window is first painted in the target background, and
+        only then are the widgets restyled; the gap between the two reads as a
+        quick repaint in the new colours.
         """
         target = theme.resolve(theme.opposite(self._theme_name))
         self.theme_btn.configure(text="…", state="disabled")
@@ -230,14 +228,15 @@ class App(ctk.CTk):
 
         started = time.perf_counter()
         try:
-            self._set_window_alpha(0.0)
+            self._paint_background(target.bg)
             self._theme_name = target.name
             self._palette = target
             self._apply_theme()
-            self._update_theme_button()
-            self.update_idletasks()
         finally:
-            self._set_window_alpha(1.0)
+            # The window colour goes back to a (light, dark) pair, so later
+            # switches keep resolving it through CustomTkinter.
+            self.configure(fg_color=theme.color("bg"))
+            self._update_theme_button()
             self.theme_btn.configure(state="normal")
         elapsed = time.perf_counter() - started
 

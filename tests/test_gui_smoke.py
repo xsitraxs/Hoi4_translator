@@ -195,28 +195,42 @@ class GuiBuildTests(unittest.TestCase):
         self.assertEqual(saved.get("lang"), "en")
         self.assertEqual(saved.get("theme"), "light")
 
-    def test_window_is_hidden_while_the_widgets_are_restyled(self):
-        """The blank white frame on a slow machine must not reach the screen.
+    def test_window_stays_on_screen_during_the_switch(self):
+        """Hiding the window makes the app look like it restarts.
 
-        Restyling runs on the Tk thread, so the window cannot repaint until the
-        handler returns. Alpha is dropped before the switch and restored after.
+        The window must keep its alpha and must not be withdrawn; the gap of a
+        slow restyle is covered by repainting the background instead.
         """
         app = self._app()
-        seen = []
-        original = app._set_window_alpha
+        hidden = []
 
-        def record(value):
-            seen.append((value, app._theme_name))
-            original(value)
+        def record(*args, **kwargs):
+            hidden.append((args, kwargs))
 
-        app._set_window_alpha = record
+        for method in ("attributes", "withdraw", "iconify"):
+            setattr(app, method, record)
+
         app._toggle_theme()
 
-        self.assertEqual([value for value, _ in seen], [0.0, 1.0])
-        # The window is hidden under the *old* theme and restored under the new.
-        self.assertEqual(seen[0][1], theme.DEFAULT_THEME)
-        self.assertEqual(seen[1][1], theme.opposite(theme.DEFAULT_THEME))
+        self.assertEqual(hidden, [], f"окно прятали во время смены темы: {hidden}")
         self.assertEqual(app.theme_btn.kwargs.get("state"), "normal")
+
+    def test_background_is_repointed_before_the_widgets_are_restyled(self):
+        """The frame shown while Tk is busy must be in the target colour."""
+        app = self._app()
+        observed = []
+        real_apply = app_module.theme.apply
+
+        def spy(root, palette):
+            observed.append(root.kwargs.get("fg_color"))
+            real_apply(root, palette)
+
+        with patch.object(app_module.theme, "apply", side_effect=spy):
+            app._toggle_theme()
+
+        self.assertEqual(observed, [theme.resolve("light").bg])
+        # After the switch the window colour is a (light, dark) pair again.
+        self.assertEqual(app.kwargs.get("fg_color"), theme.color("bg"))
 
     def test_theme_switch_reports_how_long_it_took(self):
         app = self._app()
