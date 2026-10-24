@@ -18,6 +18,7 @@ from tests import tk_stub
 tk_stub.install()
 
 import hoi4translator as translator_module  # noqa: E402  (после установки заглушки)
+from hoi4translator import localisation as localisation_module  # noqa: E402
 from hoi4translator import pipeline as pipeline_module  # noqa: E402
 from hoi4translator import report as report_module  # noqa: E402
 from hoi4translator import settings as settings_module  # noqa: E402
@@ -172,7 +173,9 @@ class TargetLanguageTests(unittest.TestCase):
 
             existing = translator_module.load_existing_translations(str(path))
 
-            self.assertEqual(existing, {"KEY_ONE:0": "Guten Tag", "KEY_TWO:0": "你好"})
+            # Keys are reported without their revision number: KEY:0 and KEY:1 are
+        # the same localisation key (see localisation.normalize_key).
+        self.assertEqual(existing, {"KEY_ONE": "Guten Tag", "KEY_TWO": "你好"})
 
     def test_source_and_destination_cannot_overlap(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1604,6 +1607,32 @@ class BrokenLineRecoveryTests(unittest.TestCase):
         )
 
 
+class RevisionNumberTests(unittest.TestCase):
+    """KEY:0 and KEY:7 are the same key; the game treats them as duplicates."""
+
+    def test_normalize_key_drops_the_revision_number(self):
+        normalize = localisation_module.normalize_key
+        self.assertEqual(normalize("  KEY:0 "), "KEY")
+        self.assertEqual(normalize("KEY:12"), "KEY")
+        self.assertEqual(normalize("KEY"), "KEY")
+        self.assertEqual(normalize("demo.1.t:0"), "demo.1.t")
+
+    def test_a_repeated_key_with_another_revision_blocks_the_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "mod_l_english.yml"
+            destination = Path(directory) / "out" / "mod_l_polish.yml"
+            destination.parent.mkdir(parents=True)
+            source.write_text(
+                'l_english:\n KEY:0 "One"\n KEY:7 "Two"\n', encoding="utf-8-sig"
+            )
+            translator = cached_translator(None)
+            result, logs = run_processor(source, destination, translator)
+
+            self.assertIsNone(result)
+            self.assertTrue(any("повторяющиеся" in entry[0] for entry in logs))
+            self.assertFalse(destination.exists())
+
+
 class RunReportTests(unittest.TestCase):
     """The run report is a file, not a line lost in the GUI log."""
 
@@ -1639,7 +1668,7 @@ class RunReportTests(unittest.TestCase):
             self.assertEqual(payload["summary"]["fallbacks"], 3)
             self.assertEqual(payload["fallbacks"], {"DeepL→Google": 3})
             self.assertEqual(
-                [row["key"] for row in payload["recovered_rows"]], ["KEY:0"]
+                [row["key"] for row in payload["recovered_rows"]], ["KEY"]
             )
             self.assertTrue(any("$STATE$" in issue for issue in
                                 payload["recovered_rows"][0]["issues"]))
@@ -1649,7 +1678,7 @@ class RunReportTests(unittest.TestCase):
 
             csv_text = Path(csv_path).read_text(encoding="utf-8")
             self.assertIn("state;file;key;issues", csv_text)
-            self.assertIn("recovered;events_l_english.yml;KEY:0;", csv_text)
+            self.assertIn("recovered;events_l_english.yml;KEY;", csv_text)
 
     def test_rejected_file_appears_in_the_report_with_a_reason(self):
         with tempfile.TemporaryDirectory() as directory:

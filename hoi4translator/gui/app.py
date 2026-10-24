@@ -75,7 +75,9 @@ def _enable_dpi_awareness() -> None:
 
 class App(ctk.CTk):
     WINDOW_WIDTH = 1000
-    WINDOW_HEIGHT = 820
+    # The quality rows (glossary, vanilla) added height; the window is clamped
+    # to the screen in _centre_window, so a big default is safe.
+    WINDOW_HEIGHT = 890
 
     def __init__(self):
         _enable_dpi_awareness()
@@ -190,12 +192,20 @@ class App(ctk.CTk):
         )
 
     def _centre_window(self) -> None:
-        """Open in the middle of the screen; never a reason to fail."""
+        """Open in the middle of the screen, never larger than the screen.
+
+        A fixed 890 px window would hang off a 768 px laptop display, putting
+        the bottom buttons out of reach. Clamping keeps every control visible.
+        """
         try:
             self.update_idletasks()
-            width, height = self.WINDOW_WIDTH, self.WINDOW_HEIGHT
-            x = max(0, (self.winfo_screenwidth() - width) // 2)
-            y = max(0, (self.winfo_screenheight() - height) // 3)
+            screen_w = max(320, int(self.winfo_screenwidth()))
+            screen_h = max(240, int(self.winfo_screenheight()))
+            width = min(self.WINDOW_WIDTH, screen_w - 40)
+            height = min(self.WINDOW_HEIGHT, screen_h - 80)
+            x = max(0, (screen_w - width) // 2)
+            y = max(0, (screen_h - height) // 3)
+            self.minsize(min(900, width), min(720, height))
             self.geometry(f"{width}x{height}+{x}+{y}")
         except Exception:
             logger.debug("Could not centre the window", exc_info=True)

@@ -145,8 +145,16 @@ class Tk(Widget):
     def resizable(self, *a, **kw):
         pass
 
-    def geometry(self, *a, **kw):
-        pass
+    def minsize(self, width=None, height=None):
+        if width is not None:
+            self._minsize = (width, height)
+        return getattr(self, "_minsize", None)
+
+    def geometry(self, value=None):
+        # Recorded so tests can check window sizing without a display.
+        if value is not None:
+            self._geometry = value
+        return getattr(self, "_geometry", "")
 
     def destroy(self):
         pass

@@ -16,6 +16,10 @@ Layers:
     translation   AsyncTranslator: the engine facade
     pipeline      per-file processing: translate, repair, write, report
     report        machine-readable run report (json/csv)
+    glossary      term list that engines cannot override
+    vanilla       index of the game's own translations
+    inspect       parse a mod and report problems without translating
+    cli           headless entry point (imported lazily by --cli)
     settings      keyring-backed secrets and persisted UI settings
     gui           Tkinter windows (imported lazily: Tk may be unavailable)
 """
@@ -38,6 +42,8 @@ from .config import (
     logger,
 )
 from .errors import TranslationCancelled, TranslationFailed
+from .glossary import Glossary, GlossaryError, load_glossary
+from .inspect import FileInspection, inspect_file, inspect_files
 from .java_service import (
     JAVA_OK,
     JavaTranslatorService,
@@ -53,6 +59,7 @@ from .localisation import (
     collect_yml_files,
     get_hoi4_language_name,
     load_existing_translations,
+    normalize_key,
     read_localisation_lines,
     rename_dst,
     source_text_hash,
@@ -97,6 +104,7 @@ from .validation import (
     ValidationReport,
     validate_preview_translations,
 )
+from .vanilla import VanillaIndex, build_vanilla_index
 
 __all__ = [
     # metadata
@@ -111,11 +119,15 @@ __all__ = [
     "HOI4_LANGUAGE_NAMES", "HOI4_LANGUAGE_NAMES_BY_CODE", "HOI4_TARGET_LANGS",
     "PLACEHOLDER_RE", "VALUE_RE", "collect_yml_files", "get_hoi4_language_name",
     "load_existing_translations", "read_localisation_lines", "rename_dst",
-    "source_text_hash", "validate_directory_relationships",
+    "normalize_key", "source_text_hash", "validate_directory_relationships",
     "validate_output_path_collisions",
     # text
     "MAX_QUERY_CHARS", "PostProcessor", "protect_placeholders",
     "restore_placeholders", "split_long_text", "zip_equal",
+    # glossary, vanilla reuse and inspection
+    "Glossary", "GlossaryError", "load_glossary",
+    "VanillaIndex", "build_vanilla_index",
+    "FileInspection", "inspect_file", "inspect_files",
     # validation
     "PlaceholderValidator", "ValidationReport", "validate_preview_translations",
     # providers

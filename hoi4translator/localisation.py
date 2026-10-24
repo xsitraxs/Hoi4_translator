@@ -38,6 +38,16 @@ def read_localisation_lines(path: str, log_cb=None) -> Tuple[List[str], str]:
     )
 
 
+def normalize_key(prefix: str) -> str:
+    """Localisation key without its revision number.
+
+    ``KEY:0`` and ``KEY:12`` are the same key: the number after the colon only
+    tracks revisions, and the game treats two such lines as duplicates. Comparing
+    raw prefixes would miss that, so every key comparison uses this form.
+    """
+    return re.sub(r':\d*$', '', prefix.strip())
+
+
 def source_text_hash(text: str) -> str:
     """Stable fingerprint of a source value, used to detect edited source lines."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -203,7 +213,7 @@ def load_existing_translations(dst_path: str, log_cb=None) -> Dict[str, str]:
                 and VALUE_SUFFIX_RE.fullmatch(match.group(3))
                 and match.group(2).strip()
             ):
-                existing[match.group(1).strip()] = match.group(2)
+                existing[normalize_key(match.group(1))] = match.group(2)
     except Exception as e:
         logger.error("Error reading existing translations (%s): %s", dst_path, e)
     return existing

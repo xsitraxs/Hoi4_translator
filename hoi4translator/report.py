@@ -78,7 +78,7 @@ class RunReport:
         summary = {
             "files": len(self.files),
             "written": 0, "rejected": 0, "cancelled": 0, "errors": 0,
-            "lines": 0, "skipped": 0, "stale": 0,
+            "lines": 0, "skipped": 0, "stale": 0, "reused": 0,
             "recovered": 0, "broken": 0, "fallbacks": sum(self.fallbacks.values()),
         }
         status_key = {
@@ -88,7 +88,7 @@ class RunReport:
         # were written from a fresh translation.
         counters = (
             ("translated", "lines"), ("skipped", "skipped"), ("stale", "stale"),
-            ("recovered", "recovered"), ("broken", "broken"),
+            ("reused", "reused"), ("recovered", "recovered"), ("broken", "broken"),
         )
         for entry in self.files:
             summary[status_key.get(entry["status"], "rejected")] += 1

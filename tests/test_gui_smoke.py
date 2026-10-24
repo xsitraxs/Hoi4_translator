@@ -132,6 +132,28 @@ class GuiBuildTests(unittest.TestCase):
         ):
             self.assertTrue(hasattr(app, attribute), f"нет атрибута {attribute}")
 
+    def test_window_is_clamped_to_a_small_screen(self):
+        """The window must never be taller than the display it opens on."""
+        app = self._app()
+        app.winfo_screenwidth = lambda: 1366
+        app.winfo_screenheight = lambda: 768
+        app._centre_window()
+
+        geometry = app.geometry()
+        width, rest = geometry.split("x")
+        height = rest.split("+")[0]
+        self.assertLessEqual(int(height), 768 - 80)
+        self.assertLessEqual(int(width), 1366 - 40)
+        self.assertLessEqual(app.minsize()[0], int(width))
+        self.assertLessEqual(app.minsize()[1], int(height))
+
+    def test_window_keeps_its_default_size_on_a_big_screen(self):
+        app = self._app()
+        app.winfo_screenwidth = lambda: 1920
+        app.winfo_screenheight = lambda: 1080
+        app._centre_window()
+        self.assertTrue(app.geometry().startswith(f"{App.WINDOW_WIDTH}x{App.WINDOW_HEIGHT}+"))
+
     def test_widget_theme_is_loaded_before_the_widgets(self):
         tk_stub.CALLS.clear()
         self._app()

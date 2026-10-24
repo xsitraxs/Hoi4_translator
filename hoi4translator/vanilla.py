@@ -15,7 +15,12 @@ import os
 from typing import Dict, List, Optional
 
 from .config import logger
-from .localisation import VALUE_RE, get_hoi4_language_name, read_localisation_lines
+from .localisation import (
+    VALUE_RE,
+    get_hoi4_language_name,
+    normalize_key,
+    read_localisation_lines,
+)
 
 #: Values shorter than this are markers, numbers or single letters; matching
 #: them would replace half the mod with the wrong string.
@@ -38,8 +43,9 @@ def read_values(path: str) -> Dict[str, str]:
         match = VALUE_RE.match(line.rstrip("\r\n"))
         if not match:
             continue
-        key = match.group(1).strip()
-        values[key] = match.group(2)
+        # KEY:0 and KEY:3 are the same key; the game's own files are full of
+        # revision numbers, so they must not decide whether a line matches.
+        values[normalize_key(match.group(1))] = match.group(2)
     return values
 
 
