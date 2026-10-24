@@ -101,11 +101,10 @@ class App(ctk.CTk):
         )
         self._loop_thread.start()
 
-        # The theme is read before the widgets exist: Tk colours cannot be
-        # changed afterwards unless every widget uses a named style.
+        # One theme, applied before the widgets exist: a widget's colour is
+        # fixed when it is built, and nothing ever repaints it afterwards.
         saved_settings = load_settings()
-        self._theme_name = str(saved_settings.get("theme") or theme.DEFAULT_THEME)
-        self._palette = theme.resolve(self._theme_name)
+        self._palette = theme.resolve()
         theme.install_theme()
         self._apply_theme()
         self._build_ui()
@@ -186,67 +185,6 @@ class App(ctk.CTk):
             text_color=self._palette.log_fg,
         )
 
-    def _update_theme_button(self) -> None:
-        other = theme.resolve(theme.opposite(self._theme_name))
-        icon = "☀" if other.name == "light" else "☾"
-        self.theme_btn.configure(text=f"{icon} {other.label}")
-
-    def _save_theme_only(self) -> None:
-        """Persist the theme without touching the OS credential store.
-
-        ``_save_current_settings`` also writes the DeepL key to the keyring and
-        scrubs legacy plaintext keys, which on Windows costs hundreds of
-        milliseconds — for a change that touches one string. A theme click must
-        not wait for that.
-        """
-        save_settings({**load_settings(), "theme": self._theme_name})
-
-    def _set_window_alpha(self, value: float) -> None:
-        """Make the window fully transparent for the duration of a restyle.
-
-        ``withdraw``/``deiconify`` would work too, but they flicker in the
-        taskbar and can drop a maximised window back to its normal size. Alpha
-        leaves the window where it is. Platforms without compositing raise
-        ``TclError`` — then the switch simply looks the way it did before.
-        """
-        try:
-            self.attributes("-alpha", value)
-        except tk.TclError:
-            logger.debug("Window transparency is not supported here", exc_info=True)
-
-    def _toggle_theme(self) -> None:
-        """Switch the palette without leaving a blank window behind.
-
-        Restyling ~80 CustomTkinter widgets runs entirely on the Tk thread, and
-        every one of them redraws its own canvas. Windows cannot repaint the
-        window until the handler returns, so the user stares at an empty frame
-        for the whole switch. Hide the window for the duration and let Tk
-        breathe on both sides; the work itself is unchanged, only what is on
-        screen while it happens.
-        """
-        target = theme.resolve(theme.opposite(self._theme_name))
-        self.theme_btn.configure(text="…", state="disabled")
-        self.update_idletasks()
-
-        started = time.perf_counter()
-        try:
-            self._set_window_alpha(0.0)
-            self._theme_name = target.name
-            self._palette = target
-            self._apply_theme()
-            self._update_theme_button()
-            self.update_idletasks()
-        finally:
-            self._set_window_alpha(1.0)
-            self.theme_btn.configure(state="normal")
-        elapsed = time.perf_counter() - started
-
-        self._save_theme_only()
-        self.log_line(
-            f"Тема оформления: {self._palette.label} ({elapsed * 1000:.0f} мс)",
-            "info",
-        )
-
     def _centre_window(self) -> None:
         """Open in the middle of the screen; never a reason to fail."""
         try:
@@ -290,13 +228,6 @@ class App(ctk.CTk):
             text=f"v{__version__}  ·  перевод локализации Hearts of Iron IV",
             font=theme.font(12), text_color=theme.color('fg_subtle'),
         ).pack(side='left', pady=(18, 0))
-        self.theme_btn = ctk.CTkButton(
-            header, text="", width=150, height=32, corner_radius=8,
-            fg_color=theme.color('panel_alt'), hover_color=theme.color('border'), text_color=theme.color('fg'),
-            font=theme.font(12), command=self._toggle_theme,
-        )
-        self.theme_btn.pack(side='right', padx=20)
-        self._update_theme_button()
 
         # --- статус-бар (внизу) ---
         status_bar = ctk.CTkFrame(self, corner_radius=0, fg_color=theme.color('panel'), height=34)
@@ -886,7 +817,6 @@ class App(ctk.CTk):
             'reuse_fallback_cache': self.reuse_fallback_cache_var.get(),
             'java_jar': self.java_jar_var.get(),
             'broken_lines': self.broken_line_var.get(),
-            'theme': self._theme_name,
         })
 
     def _on_close(self):
@@ -1146,7 +1076,6 @@ class App(ctk.CTk):
                                         self, fp_, orig_vals, trans_vals,
                                         on_accept=accept_preview,
                                         on_cancel=done_evt.set,
-                                        palette=self._palette,
                                     )
                                 except Exception:
                                     # A crash while building the window used to
