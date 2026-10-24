@@ -162,6 +162,15 @@ jobs:
         with:
           path: artifacts
 
+      # A PyInstaller build is not reproducible, so the hash has to come from
+      # the very file that is published. Computing it here is the only way to
+      # publish a checksum users can actually verify.
+      - name: Checksums
+        working-directory: artifacts
+        run: |
+          sha256sum */Hoi4_Translator.exe */hoi4_translator.jar | tee SHA256SUMS.txt
+          test -s SHA256SUMS.txt
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.3.3
         with:
@@ -169,6 +178,7 @@ jobs:
           files: |
             artifacts/Hoi4_Translator/Hoi4_Translator.exe
             artifacts/hoi4_translator_jar/hoi4_translator.jar
+            artifacts/SHA256SUMS.txt
           generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
