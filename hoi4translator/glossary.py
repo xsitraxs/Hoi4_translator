@@ -19,9 +19,6 @@ from typing import Dict, Iterable, List, Optional, Pattern, Tuple
 
 from .config import logger
 
-#: Longest term first, so "Soviet Union" wins over "Soviet".
-_SORT_HINT = ""
-
 
 class GlossaryError(ValueError):
     """The glossary file could not be read as a list of term pairs."""
@@ -56,11 +53,9 @@ class Glossary:
             source, target = cleaned
             self._terms[source.casefold()] = target
         self.origin = origin
-        self._spellings = {
-            term: self._terms[term] for term in sorted(self._terms, key=len, reverse=True)
-        }
+        # Longest term first, so "Soviet Union" wins over "Soviet".
+        self._ordered = sorted(self._terms, key=len, reverse=True)
         self._pattern: Optional[Pattern] = None
-        self.conflicts: List[str] = []
 
     # --- construction ---------------------------------------------------
     @classmethod
@@ -133,7 +128,7 @@ class Glossary:
     def pattern(self) -> Optional[Pattern]:
         """Regex that matches any term on word boundaries, longest first."""
         if self._pattern is None and self._terms:
-            alternatives = "|".join(re.escape(term) for term in self._spellings)
+            alternatives = "|".join(re.escape(term) for term in self._ordered)
             self._pattern = re.compile(
                 rf"(?<![\w])(?:{alternatives})(?![\w])", re.IGNORECASE
             )

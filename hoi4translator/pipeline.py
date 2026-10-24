@@ -501,7 +501,12 @@ def _process_file(
             'warning',
         )
 
-    broken_in_file = translator.validation_report.broken_for_file(rel_path)
+    # A translator object only has to provide translate_batch(); the validation
+    # report is optional (the GUI's AsyncTranslator always has one).
+    validation_report = getattr(translator, "validation_report", None)
+    broken_in_file = (
+        validation_report.broken_for_file(rel_path) if validation_report else []
+    )
     for entry in broken_in_file:
         if entry["key"] not in recovered_keys:
             broken_keys.append(entry["key"])

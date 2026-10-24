@@ -4,6 +4,7 @@ These cover the three features that make 1.4.0: a term list that engines cannot
 override, reuse of the game's own translations, and a run without a window.
 """
 import asyncio
+import os
 import tempfile
 import threading
 import unittest
@@ -194,6 +195,131 @@ class VanillaIndexTests(unittest.TestCase):
         index = VanillaIndex.build(str(self.root), "en", "ru")
         self.assertEqual(index.lookup("Infantry Division"), "Пехотная дивизия")
         self.assertEqual(index.conflicts, 1)
+
+
+class CliEndToEndTests(unittest.TestCase):
+    """The whole CLI path with the engine stubbed: files, report, exit code."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        base = Path(self.directory.name)
+        # src is the mod root and dst is another mod root, as documented: the
+        # relative structure is preserved and the language folder is replaced.
+        self.src = base / "mod"
+        self.dst = base / "out"
+        write(self.src / "localisation" / "english" / "mod_l_english.yml",
+              'l_english:\n KEY_1:0 "Hello $STATE$"\n KEY_2:0 "Goodbye"\n')
+
+    def _run(self, *extra):
+        class FakeTranslator:
+            def __init__(self, *args, **kwargs):
+                self.source_lang = "en"
+                self.cache = None
+                self.validation_report = _NullTranslatorReport()
+                self.batches = []
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return None
+
+            async def translate_batch(self, texts, target, keys=None, file_ctx="",
+                                      line_progress_cb=None, stop_event=None):
+                self.batches.append(list(texts))
+                return [f"RU {value}" for value in texts]
+
+        with patch.object(cli, "_translator_factory", return_value=FakeTranslator):
+            return cli.main([
+                "--src", str(self.src), "--dst", str(self.dst),
+                "--target", "ru", *extra,
+            ])
+
+    def test_files_and_report_are_written(self):
+        self.assertEqual(self._run(), 0)
+        output = self.dst / "localisation" / "russian" / "mod_l_russian.yml"
+        self.assertTrue(output.exists(), "файл перевода не создан")
+        content = output.read_text(encoding="utf-8-sig")
+        self.assertTrue(content.startswith("l_russian:"))
+        self.assertIn('"RU Hello $STATE$"', content)
+
+        reports = list(self.dst.glob("hoi4_translator_report_*.json"))
+        self.assertEqual(len(reports), 1, "отчёт JSON не создан")
+
+    def test_no_report_flag_skips_the_report(self):
+        self.assertEqual(self._run("--no-report"), 0)
+        self.assertEqual(list(self.dst.glob("hoi4_translator_report_*")), [])
+
+    def test_quiet_keeps_the_summary_line(self):
+        self.assertEqual(self._run("--quiet"), 0)
+
+
+class AuditRegressionTests(unittest.TestCase):
+    """Defects found by the pre-release audit; each one shipped-worthy."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+
+    def test_vanilla_matches_keys_that_differ_only_by_revision_number(self):
+        # The game's own files are full of KEY:0 / KEY:3 for the same key.
+        root = Path(self.directory.name)
+        (root / "english").mkdir()
+        (root / "russian").mkdir()
+        (root / "english" / "units_l_english.yml").write_text(
+            'l_english:\n UNIT_1:0 "Infantry Division"\n', encoding="utf-8-sig"
+        )
+        (root / "russian" / "units_l_russian.yml").write_text(
+            'l_russian:\n UNIT_1:3 "Пехотная дивизия"\n', encoding="utf-8-sig"
+        )
+        index = VanillaIndex.build(str(root), "en", "ru")
+        self.assertEqual(index.lookup("Infantry Division"), "Пехотная дивизия")
+
+    def test_report_summary_counts_reused_lines(self):
+        from hoi4translator.report import RunReport
+
+        report = RunReport("Google", "en", "ru", "src", "dst")
+        report.record_file("a.yml", "b.yml", "written", translated=3, reused=7)
+        self.assertEqual(report.summary()["reused"], 7)
+
+    def test_cli_rejects_deepl_without_a_key_instead_of_falling_back(self):
+        base = Path(self.directory.name)
+        write(base / "mod" / "a_l_english.yml", 'l_english:\n A:0 "one"\n')
+        with patch.dict(os.environ, {"DEEPL_API_KEY": ""}, clear=False):
+            code = cli.main([
+                "--src", str(base / "mod"), "--dst", str(base / "out"),
+                "--target", "ru", "--engine", "DeepL",
+            ])
+        self.assertEqual(code, 2)
+        self.assertFalse((base / "out").exists())
+
+    def test_cli_accepts_a_jar_path_for_javasim(self):
+        parser = cli.build_parser()
+        args = parser.parse_args([
+            "--src", "a", "--dst", "b", "--engine", "JavaSim", "--java-jar", "x.jar",
+        ])
+        self.assertEqual(args.java_jar, "x.jar")
+
+    def test_dry_run_does_not_ignore_a_broken_glossary(self):
+        base = Path(self.directory.name)
+        write(base / "mod" / "a_l_english.yml", 'l_english:\n A:0 "one"\n')
+        bad = write(base / "bad.tsv", "мусор без разделителя\n")
+        code = cli.main([
+            "--src", str(base / "mod"), "--dst", str(base / "out"),
+            "--target", "ru", "--dry-run", "--glossary", bad,
+        ])
+        self.assertEqual(code, 2)
+
+    def test_glossary_term_with_regex_characters_is_matched_literally(self):
+        glossary = Glossary([("C++", "Си плюс плюс"), ("US$", "Доллар")])
+        protected, tokens = text_module.protect_placeholders(
+            "C++ and US$ spend", glossary
+        )
+        self.assertEqual(
+            text_module.restore_placeholders(protected, tokens),
+            "Си плюс плюс and Доллар spend",
+        )
 
 
 class VanillaPipelineTests(unittest.TestCase):

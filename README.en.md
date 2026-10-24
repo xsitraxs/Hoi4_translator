@@ -98,6 +98,10 @@ python hoi4_translator.py --cli \
 
 `--dry-run` parses the files and reports broken lines, duplicate keys and unclosed `§` without translating or writing anything — no game and no internet needed.
 
+`KEY:0` and `KEY:7` are the same localisation key (the number is only a revision marker), so a file that repeats a key with different numbers is rejected instead of being written with overlapping entries.
+
+DeepL needs a key (`--api-key` or `DEEPL_API_KEY`); without one the CLI exits with code `2` rather than silently falling back to a free engine.
+
 Useful flags: `--skip-translated`, `--broken-lines keep-original`, `--concurrency N`, `--no-report`, `--quiet`; `--cli --help` lists everything. Exit codes: `0` all files written, `1` at least one file failed, `2` bad arguments or folders (nothing started).
 
 ## 📁 Choosing folders

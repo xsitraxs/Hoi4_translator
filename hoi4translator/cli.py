@@ -37,13 +37,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hoi4_translator.py --cli",
         description="Перевод локализации мода без графического интерфейса.",
+        epilog=(
+            "Пример: --src MOD --dst OUT --target ru, где MOD содержит "
+            "localisation/english, а OUT станет корнем перевода с "
+            "localisation/russian внутри. Проверить файлы, ничего не переводя: "
+            "--dry-run."
+        ),
     )
     parser.add_argument("--src", required=True, help="папка мода или localisation с исходниками")
     parser.add_argument("--dst", required=True, help="куда писать перевод (тот же уровень корня)")
     parser.add_argument("--target", default="ru", help="язык перевода (ru, en, de, ...)")
     parser.add_argument("--source-lang", default="en", help="язык исходников (по умолчанию en)")
     parser.add_argument("--engine", default="Google", choices=ENGINES, help="движок перевода")
-    parser.add_argument("--api-key", default=None, help="ключ DeepL (или переменная DEEPL_API_KEY)")
+    parser.add_argument(
+        "--api-key", default=None,
+        help="ключ DeepL (или переменная DEEPL_API_KEY: она не видна "
+             "в списке процессов)",
+    )
+    parser.add_argument("--java-jar", default=None,
+                        help="путь к hoi4_translator.jar для движка JavaSim "
+                             "(иначе ищется рядом с программой или собирается из java/)")
     parser.add_argument("--glossary", default=None, help="файл глоссария (TSV/CSV/JSON)")
     parser.add_argument(
         "--vanilla", default=None,
@@ -85,6 +98,7 @@ async def _translate(args, files: List[str], output_paths, glossary, vanilla) ->
     api_key = args.api_key or os.environ.get("DEEPL_API_KEY")
     translator = AsyncTranslator(
         args.engine, api_key=api_key, source_lang=args.source_lang,
+        java_jar_path=args.java_jar,
         concurrency=args.concurrency, glossary=glossary,
     )
     await translator.__aenter__()
@@ -143,6 +157,32 @@ async def _translate(args, files: List[str], output_paths, glossary, vanilla) ->
     return 0 if failures == 0 else 1
 
 
+def _preflight_engine(args) -> Optional[int]:
+    """Fail before the run starts if the chosen engine cannot possibly work.
+
+    Printing "run started" and then dying looks like a crash; a missing key or
+    JAR is a usage error and deserves a clean message and exit code 2.
+    """
+    if args.engine == "DeepL" and not (args.api_key or os.environ.get("DEEPL_API_KEY")):
+        return _fail(
+            "Для движка DeepL нужен ключ: --api-key или переменная окружения "
+            "DEEPL_API_KEY. Без него DeepL молча уступил бы Google."
+        )
+    if args.engine == "JavaSim":
+        from .java_service import resolve_java_jar
+
+        jar_path = resolve_java_jar(args.java_jar)
+        if not jar_path:
+            return _fail(
+                "JavaSim недоступен: JAR не найден и не может быть собран "
+                "(нужен JDK 11+). Укажите --java-jar или соберите его: "
+                "javac -d java java/com/hoi4/translator/HoI4Translator.java"
+            )
+        args.java_jar = jar_path
+        print(f"JavaSim JAR: {jar_path}", flush=True)
+    return None
+
+
 def _dry_run(args, files: List[str], output_paths: Dict[str, str]) -> int:
     """Parse everything and report problems; no engine, no writes."""
     from .inspect import format_report, inspect_files
@@ -185,11 +225,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _fail(str(error))
 
     if args.dry_run:
+        # A typo in the glossary path must not hide behind "nothing to check".
+        try:
+            load_glossary(args.glossary)
+        except GlossaryError as error:
+            return _fail(str(error))
         return _dry_run(args, files, dict(pairs))
 
     vanilla = build_vanilla_index(
         args.vanilla, args.source_lang, args.target, log_cb=print
     )
+
+    preflight_error = _preflight_engine(args)
+    if preflight_error is not None:
+        return preflight_error
 
     print(
         f"Hoi4 Translator {__version__} | {args.engine} | "
