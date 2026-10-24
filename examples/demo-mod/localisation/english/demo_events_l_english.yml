@@ -1,0 +1,9 @@
+l_english:
+ # Демонстрационный мод: строки специально содержат всё, что ломает машинный перевод.
+ demo.1.t:0 "Rearm $STATE$"
+ demo.1.d:0 "Our advisors in $STATE$ report that [GetPlayer.GetTag] is ready to expand. £army_experience|1 will be spent."
+ demo.1.a:0 "§YApprove§! the plan"
+ demo.1.b:0 "§RRefuse§! and wait"
+ demo.2.t:0 "The Day of Infamy"
+ demo.2.d:0 "Our diplomats call it \"an incident\".\nThe press calls it war."
+ demo.2.a:0 "Mobilise the Navy"

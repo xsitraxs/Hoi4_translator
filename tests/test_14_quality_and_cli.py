@@ -324,3 +324,85 @@ class _NullCache:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InspectTests(unittest.TestCase):
+    """--dry-run exists so a mod can be checked without the game or the network."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+
+    def _file(self, name, content):
+        return write(Path(self.directory.name) / name, content)
+
+    def test_a_clean_file_has_no_problems(self):
+        from hoi4translator.inspect import inspect_file
+
+        path = self._file("ok_l_english.yml", 'l_english:\n KEY:0 "Hello $STATE$"\n')
+        inspection = inspect_file(path)
+        self.assertEqual(inspection.keys, 1)
+        self.assertFalse(inspection.has_problems)
+
+    def test_malformed_lines_are_counted_with_numbers(self):
+        from hoi4translator.inspect import inspect_file
+
+        path = self._file("bad_l_english.yml", 'l_english:\n KEY:0 "ok"\n broken line: "no key"\n')
+        inspection = inspect_file(path)
+        self.assertEqual(inspection.malformed, [3])
+        self.assertTrue(inspection.has_problems)
+
+    def test_duplicate_keys_are_reported(self):
+        from hoi4translator.inspect import inspect_file
+
+        path = self._file("dup_l_english.yml", 'l_english:\n A:0 "one"\n A:0 "two"\n')
+        inspection = inspect_file(path)
+        self.assertEqual(inspection.duplicates, {"A": [2, 3]})
+
+    def test_unclosed_colour_marker_is_reported(self):
+        from hoi4translator.inspect import inspect_file
+
+        path = self._file("color_l_english.yml", 'l_english:\n A:0 "§Yunclosed"\n')
+        inspection = inspect_file(path)
+        self.assertTrue(inspection.broken_markers)
+        self.assertTrue(inspection.has_problems)
+
+    def test_already_translated_lines_are_counted(self):
+        from hoi4translator.inspect import inspect_file
+
+        source = self._file("a_l_english.yml", 'l_english:\n A:0 "one"\n B:0 "two"\n')
+        target = self._file("a_l_russian.yml", 'l_russian:\n A:0 "раз"\n')
+        self.assertEqual(inspect_file(source, target).translated, 1)
+
+    def test_unreadable_file_is_reported_not_raised(self):
+        from hoi4translator.inspect import inspect_file
+
+        inspection = inspect_file(str(Path(self.directory.name) / "нет.yml"))
+        self.assertTrue(inspection.error)
+
+    def test_dry_run_returns_zero_for_a_clean_mod(self):
+        base = Path(self.directory.name)
+        write(base / "mod" / "a_l_english.yml", 'l_english:\n A:0 "one"\n')
+        code = cli.main([
+            "--src", str(base / "mod"), "--dst", str(base / "out"),
+            "--target", "ru", "--dry-run",
+        ])
+        self.assertEqual(code, 0)
+
+    def test_dry_run_returns_one_for_a_broken_mod(self):
+        base = Path(self.directory.name)
+        write(base / "mod" / "a_l_english.yml", 'l_english:\n broken line: "x"\n')
+        code = cli.main([
+            "--src", str(base / "mod"), "--dst", str(base / "out"),
+            "--target", "ru", "--dry-run",
+        ])
+        self.assertEqual(code, 1)
+
+    def test_dry_run_writes_nothing(self):
+        base = Path(self.directory.name)
+        write(base / "mod" / "a_l_english.yml", 'l_english:\n A:0 "one"\n')
+        cli.main([
+            "--src", str(base / "mod"), "--dst", str(base / "out"),
+            "--target", "ru", "--dry-run",
+        ])
+        self.assertFalse((base / "out").exists())

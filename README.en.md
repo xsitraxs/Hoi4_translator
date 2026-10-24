@@ -96,6 +96,8 @@ python hoi4_translator.py --cli \
   --vanilla "C:/Steam/steamapps/common/Hearts of Iron IV/localisation"
 ```
 
+`--dry-run` parses the files and reports broken lines, duplicate keys and unclosed `§` without translating or writing anything — no game and no internet needed.
+
 Useful flags: `--skip-translated`, `--broken-lines keep-original`, `--concurrency N`, `--no-report`, `--quiet`; `--cli --help` lists everything. Exit codes: `0` all files written, `1` at least one file failed, `2` bad arguments or folders (nothing started).
 
 ## 📁 Choosing folders

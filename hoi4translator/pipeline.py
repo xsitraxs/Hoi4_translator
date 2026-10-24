@@ -15,6 +15,7 @@ from .localisation import (
     _split_line_ending,
     get_hoi4_language_name,
     load_existing_translations,
+    normalize_key,
     read_localisation_lines,
     source_text_hash,
 )
@@ -257,13 +258,18 @@ def _process_file(
         if not VALUE_SUFFIX_RE.fullmatch(suffix):
             malformed_lines.append(i + 1)
             continue
-        key = prefix.strip()
+        # KEY:0 and KEY:1 are the same localisation key (the number is only a
+        # revision marker), so comparisons and duplicate detection use the
+        # version-less form.
+        raw_key = prefix.strip()
+        key = normalize_key(prefix)
         key_line_numbers.setdefault(key, []).append(i + 1)
         file_key_hashes[key] = source_text_hash(value)
 
         existing_value = existing.get(key) if skip_translated else None
         if existing_value is not None:
-            known_hash = recorded_hashes.get(key)
+            # Hashes written by older versions are keyed by "KEY:0".
+            known_hash = recorded_hashes.get(key, recorded_hashes.get(raw_key))
             source_changed = (
                 known_hash is not None
                 and known_hash != RECOVERED_HASH_MARKER

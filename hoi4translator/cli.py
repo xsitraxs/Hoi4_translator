@@ -15,7 +15,7 @@ import asyncio
 import os
 import sys
 import threading
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 from .config import SEMAPHORE_LIMIT, __version__, logger
 from .glossary import GlossaryError, load_glossary
@@ -58,6 +58,11 @@ def build_parser() -> argparse.ArgumentParser:
                         default="reject",
                         help="что делать со строкой, сломавшей формат локализации")
     parser.add_argument("--no-report", action="store_true", help="не создавать JSON/CSV отчёт")
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="только проверить файлы: разобрать, найти битые строки и дубликаты ключей, "
+             "ничего не переводить и не писать (игра и интернет не нужны)",
+    )
     parser.add_argument("--quiet", action="store_true", help="только итог, без строк файлов")
     parser.add_argument("--version", action="version", version=__version__)
     return parser
@@ -138,6 +143,16 @@ async def _translate(args, files: List[str], output_paths, glossary, vanilla) ->
     return 0 if failures == 0 else 1
 
 
+def _dry_run(args, files: List[str], output_paths: Dict[str, str]) -> int:
+    """Parse everything and report problems; no engine, no writes."""
+    from .inspect import format_report, inspect_files
+
+    inspections = inspect_files(files, output_paths)
+    for line in format_report(inspections, args.src):
+        print(line, flush=True)
+    return 1 if any(inspection.has_problems for inspection in inspections) else 0
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -168,6 +183,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         glossary = load_glossary(args.glossary)
     except GlossaryError as error:
         return _fail(str(error))
+
+    if args.dry_run:
+        return _dry_run(args, files, dict(pairs))
 
     vanilla = build_vanilla_index(
         args.vanilla, args.source_lang, args.target, log_cb=print
