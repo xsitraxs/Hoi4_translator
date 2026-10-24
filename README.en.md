@@ -28,6 +28,20 @@ Drop screenshots / a GIF into docs/images/, then uncomment:
 ![Translation preview](docs/images/preview.png)
 -->
 
+## 🔒 Is the EXE safe to run?
+
+Antivirus and SmartScreen warnings on PyInstaller builds are normal, but you should still verify:
+
+* **Where it came from.** The EXE is built by GitHub Actions from this repository; each release notes which CI run produced it.
+* **Checksum.** Every release lists a SHA256 — check it locally:
+  ```powershell
+  certutil -hashfile Hoi4_Translator.exe SHA256
+  ```
+  or `sha256sum` / `shasum -a 256` on Linux/macOS.
+* **SmartScreen.** The binary is not code-signed (that costs money), so Windows will warn you: "More info" → "Run anyway".
+* **VirusTotal.** The release notes link a scan report for that exact build.
+* **No trust in binaries at all.** MIT source is right here — run it with Python 3.9+ instead.
+
 ## ✨ What it does
 
 * **Engines:** DeepL (official client, API key stored in the OS credential store), Google Translate, MyMemory, and an optional Java engine (JavaSim).
