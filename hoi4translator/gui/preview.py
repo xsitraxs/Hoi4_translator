@@ -2,7 +2,7 @@
 import os
 import tkinter as tk
 from tkinter import messagebox
-from typing import List, Optional
+from typing import List
 
 import customtkinter as ctk
 
@@ -23,9 +23,9 @@ class PreviewWindow(ctk.CTkToplevel):
     MAX_PREVIEW_ROWS = 1000
 
     def __init__(self, parent, filename: str, originals: List[str], translations: List[str],
-                 on_accept, on_cancel, palette: Optional[theme.Palette] = None):
+                 on_accept, on_cancel):
         super().__init__(parent)
-        self._palette = palette if palette is not None else theme.resolve(None)
+        self._palette = theme.resolve()
 
         self.title(f"Предпросмотр — {os.path.basename(filename)}")
         self.configure(fg_color=theme.color('bg'))

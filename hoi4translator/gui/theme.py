@@ -1,11 +1,16 @@
-"""Palettes, fonts and the CustomTkinter colour theme.
+"""The palette, fonts and the CustomTkinter colour theme.
 
 The amber theme file (``amber.json``) defines how the *widgets* look; this
 module defines the colours that a widget cannot express on its own: log tags,
 status messages, the zebra striping of the preview and the accent shades used
-for the buttons that must stand out. Two palettes — dark and light — are
-selected with ``customtkinter.set_appearance_mode``, so switching a theme is a
-single call and every widget follows.
+for the buttons that must stand out. ``amber.json`` still carries a light
+variant of every widget colour, but the app never asks for it.
+
+There is one theme, deliberately. A light variant existed and caused nothing
+but trouble: the palette had to be threaded through every widget, and a switch
+restyled ~80 CustomTkinter widgets inside one Tk callback, which froze the
+window while it happened. Dark only means a widget's colour is fixed when it is
+built, and no code path ever has to repaint anything.
 """
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,7 +26,7 @@ FONT_MONO = "Consolas"
 class Palette:
     """Colours that are not part of the widget theme."""
 
-    name: str          # совпадает с режимом CustomTkinter: dark | light
+    name: str          # режим CustomTkinter, всегда dark
     label: str
     bg: str
     panel: str
@@ -66,45 +71,21 @@ DARK = Palette(
     row_alt="#202327",
 )
 
-LIGHT = Palette(
-    name="light",
-    label="Светлая",
-    bg="#F4F5F7",
-    panel="#FFFFFF",
-    panel_alt="#EDEFF2",
-    input_bg="#FFFFFF",
-    border="#D5D8DC",
-    fg="#1F2124",
-    fg_muted="#565C66",
-    fg_subtle="#7A818B",
-    accent="#D97706",
-    accent_hover="#B45309",
-    on_accent="#FFFFFF",
-    success="#2E7D32",
-    warning="#B45309",
-    error="#C62828",
-    info="#1565C0",
-    log_bg="#FFFFFF",
-    log_fg="#2B2F34",
-    row_alt="#F1F2F4",
-)
-
-PALETTES: Dict[str, Palette] = {palette.name: palette for palette in (DARK, LIGHT)}
+PALETTE = DARK
+PALETTES: Dict[str, Palette] = {DARK.name: DARK}
 DEFAULT_THEME = DARK.name
 
 # Log tags: every message colour in one place.
 LOG_TAGS = ("error", "success", "info", "warning", "muted")
 
 
-def resolve(name: Optional[str]) -> Palette:
-    """Return the palette for `name`, falling back to the dark one."""
-    if name:
-        return PALETTES.get(str(name).casefold(), DARK)
-    return DARK
+def resolve(name: Optional[str] = None) -> Palette:
+    """Return the palette. The argument is accepted and ignored.
 
-
-def opposite(name: str) -> str:
-    return "light" if name == "dark" else "dark"
+    Settings written by older versions still carry ``"theme": "light"``; the
+    app now has one theme, so a saved name must not be able to change anything.
+    """
+    return PALETTE
 
 
 def log_tag_colors(palette: Palette) -> Dict[str, str]:
@@ -127,24 +108,20 @@ def install_theme() -> None:
     ctk.set_default_color_theme(theme_file())
 
 
-def color(role: str) -> tuple:
-    """Return the `(light, dark)` pair for a palette role.
+def color(role: str) -> str:
+    """Return the colour for a palette role.
 
-    CustomTkinter resolves a tuple against the current appearance mode and
-    re-resolves it on every switch, so a widget built with ``theme.color("panel")``
-    follows the theme forever. A single colour string is frozen at construction
-    time: that is how the header and the bottom buttons used to stay dark in the
-    light theme.
+    One theme means a plain string is correct: nothing ever re-resolves it.
     """
     if role not in Palette.__dataclass_fields__:
         raise KeyError(f"Нет такого цвета в палитре: {role}")
-    return (getattr(LIGHT, role), getattr(DARK, role))
+    return getattr(PALETTE, role)
 
 
-def apply(root, palette: Palette) -> None:
-    """Switch the whole application to `palette`."""
+def apply(root, palette: Palette = PALETTE) -> None:
+    """Fix the appearance mode and paint the window background."""
     ctk.set_appearance_mode(palette.name)
-    root.configure(fg_color=color("bg"))
+    root.configure(fg_color=palette.bg)
 
 
 def font(size: int = 13, weight: Optional[str] = None, mono: bool = False) -> "ctk.CTkFont":

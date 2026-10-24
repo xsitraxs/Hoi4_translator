@@ -21,9 +21,7 @@ Point the tool at a mod's `localisation` folder, pick a target language and an e
 | `hoi4_translator.jar` | JavaSim engine, put it next to the EXE (needs Java 11+) |
 | From source | Python 3.9+, `pip install -r requirements.txt`, then `python hoi4_translator.py` |
 
-| Dark theme | Light theme |
-| --- | --- |
-| ![Main window, dark theme](docs/images/main-window-dark.png) | ![Main window, light theme](docs/images/main-window-light.png) |
+![HoI4 Translator main window](docs/images/main-window-dark.png)
 
 ### What the output looks like
 
@@ -67,7 +65,7 @@ Antivirus and SmartScreen warnings on PyInstaller builds are normal, but you sho
 * **Preview:** the first 1000 lines of each file can be reviewed and edited before saving.
 * **Run report:** `hoi4_translator_report_<date>.json` and `.csv` next to the output folder — files, written/rejected/cancelled counts, fallbacks, broken and recovered lines.
 * **Output format:** UTF-8 **with BOM**, `l_<language>:` header, `_l_<language>.yml` suffix, relative folder structure preserved.
-* **GUI:** CustomTkinter, dark and light themes, live log, twin progress bars, cancel that actually cancels requests.
+* **GUI:** CustomTkinter, dark theme with an amber accent, live log, twin progress bars, cancel that actually cancels requests.
 
 ## 🛠 Requirements
 

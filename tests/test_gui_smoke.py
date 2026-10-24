@@ -21,37 +21,39 @@ import customtkinter as ctk  # noqa: E402  (после установки заг
 
 from hoi4translator import settings as settings_module  # noqa: E402
 from hoi4translator.gui import theme  # noqa: E402
-from hoi4translator.gui import app as app_module  # noqa: E402
 from hoi4translator.gui.app import App  # noqa: E402
 from hoi4translator.gui.preview import PreviewWindow  # noqa: E402
 
 
 class PaletteTests(unittest.TestCase):
-    def test_both_palettes_are_complete_and_self_consistent(self):
-        for name, palette in theme.PALETTES.items():
-            self.assertEqual(palette.name, name)
-            for field_name in palette.__dataclass_fields__:
-                value = getattr(palette, field_name)
-                if field_name in {"name", "label"}:
-                    continue
-                self.assertIsInstance(value, str, f"{name}.{field_name}")
-                self.assertTrue(value, f"{name}.{field_name} пустой")
+    def test_the_single_palette_is_complete(self):
+        palette = theme.PALETTE
+        self.assertEqual(theme.PALETTES, {palette.name: palette})
+        for field_name in palette.__dataclass_fields__:
+            value = getattr(palette, field_name)
+            if field_name in {"name", "label"}:
+                continue
+            self.assertIsInstance(value, str, field_name)
+            self.assertTrue(value, f"{field_name} пустой")
 
-    def test_unknown_theme_name_falls_back_to_the_default(self):
-        self.assertEqual(theme.resolve("").name, theme.DEFAULT_THEME)
-        self.assertEqual(theme.resolve("нет такой темы").name, theme.DEFAULT_THEME)
-        self.assertEqual(theme.resolve("LIGHT").name, "light")
+    def test_resolve_ignores_a_theme_saved_by_an_older_version(self):
+        # Settings written before the light theme was removed still contain
+        # "theme": "light"; it must not be able to change anything.
+        for name in ("", "light", "dark", "нет такой темы", None):
+            self.assertIs(theme.resolve(name), theme.PALETTE)
 
-    def test_opposite_always_leaves_the_current_theme(self):
-        for name in theme.PALETTES:
-            self.assertNotEqual(theme.opposite(name), name)
-            self.assertIn(theme.opposite(name), theme.PALETTES)
+    def test_every_role_resolves_to_its_colour(self):
+        for role in theme.Palette.__dataclass_fields__:
+            if role in {"name", "label"}:
+                continue
+            self.assertEqual(theme.color(role), getattr(theme.PALETTE, role))
+        with self.assertRaises(KeyError):
+            theme.color("нет_такого_цвета")
 
     def test_log_tags_cover_every_tag_the_gui_uses(self):
-        for palette in theme.PALETTES.values():
-            colours = theme.log_tag_colors(palette)
-            self.assertEqual(set(colours), set(theme.LOG_TAGS))
-            self.assertTrue(all(colours.values()))
+        colours = theme.log_tag_colors(theme.PALETTE)
+        self.assertEqual(set(colours), set(theme.LOG_TAGS))
+        self.assertTrue(all(colours.values()))
 
 
 class ThemeFileTests(unittest.TestCase):
@@ -125,7 +127,7 @@ class GuiBuildTests(unittest.TestCase):
             "java_jar_var", "api_entry", "verify_btn", "api_status_lbl",
             "broken_line_var", "report_info_var", "progress", "progress_lines",
             "progress_file_lbl", "progress_lines_lbl", "log_widget",
-            "start_btn", "stop_btn", "theme_btn", "status_var", "speed_var",
+            "start_btn", "stop_btn", "status_var", "speed_var",
         ):
             self.assertTrue(hasattr(app, attribute), f"нет атрибута {attribute}")
 
@@ -134,124 +136,40 @@ class GuiBuildTests(unittest.TestCase):
         self._app()
         self.assertEqual(ctk.state["theme"], theme.theme_file())
 
-    def test_theme_switch_changes_appearance_mode_and_is_remembered(self):
-        app = self._app()
-        self.assertEqual(app._theme_name, theme.DEFAULT_THEME)
-        self.assertEqual(ctk.get_appearance_mode(), theme.DEFAULT_THEME)
+    def test_appearance_mode_is_fixed_to_the_single_theme(self):
+        for saved in (None, "light", "dark"):
+            if saved is not None:
+                settings_module.save_settings({"theme": saved})
+            app = self._app()
+            self.assertEqual(ctk.get_appearance_mode(), theme.DEFAULT_THEME)
+            self.assertIs(app._palette, theme.PALETTE)
+            app.destroy()
 
-        app._toggle_theme()
-        other = theme.opposite(theme.DEFAULT_THEME)
-        self.assertEqual(app._theme_name, other)
-        self.assertEqual(ctk.get_appearance_mode(), other)
-        # The button advertises the theme you get by clicking it.
-        self.assertIn(
-            theme.resolve(theme.opposite(app._theme_name)).label,
-            app.theme_btn.kwargs.get("text", ""),
+    def test_the_theme_switch_is_gone(self):
+        tk_stub.CREATED.clear()
+        app = self._app()
+
+        # No widget may advertise a theme, and no attribute may hold one.
+        labels = [kwargs.get("text", "") for _, kwargs in tk_stub.CREATED]
+        self.assertFalse(
+            [text for text in labels if "Светлая" in text or "Тёмная" in text],
+            "в окне осталась кнопка переключения темы",
         )
-        self.assertEqual(settings_module.load_settings().get("theme"), other)
+        self.assertNotIn("theme_btn", vars(app))
+        # Methods are class attributes, so hasattr here is meaningful.
+        for method in ("_toggle_theme", "_update_theme_button", "_paint_background",
+                       "_save_theme_only", "_set_window_alpha"):
+            self.assertFalse(hasattr(App, method), f"остался метод {method}")
 
-        app._toggle_theme()
-        self.assertEqual(ctk.get_appearance_mode(), theme.DEFAULT_THEME)
-        self.assertEqual(
-            settings_module.load_settings().get("theme"), theme.DEFAULT_THEME
-        )
-
-    def test_saved_theme_is_restored_on_the_next_start(self):
+    def test_saved_settings_do_not_carry_a_theme(self):
         app = self._app()
-        app._toggle_theme()
-        chosen = app._theme_name
-        app.destroy()
+        app._save_current_settings()
+        self.assertNotIn("theme", settings_module.load_settings())
 
-        restored = self._app()
-        self.assertEqual(restored._theme_name, chosen)
-        self.assertEqual(ctk.get_appearance_mode(), chosen)
-
-    def test_theme_switch_does_not_touch_the_credential_store(self):
-        """Saving the theme must not cost a keyring round-trip.
-
-        _save_current_settings() writes the DeepL key to the OS credential store
-        and scrubs legacy plaintext keys; on Windows that is hundreds of
-        milliseconds, and it used to run on every theme click.
-        """
+    def test_log_colours_match_the_palette(self):
         app = self._app()
-        with patch.object(app_module, "store_api_key") as store, \
-                patch.object(app_module, "scrub_plaintext_api_keys") as scrub:
-            app._toggle_theme()
-
-        store.assert_not_called()
-        scrub.assert_not_called()
-        self.assertEqual(
-            settings_module.load_settings().get("theme"),
-            theme.opposite(theme.DEFAULT_THEME),
-        )
-
-    def test_theme_switch_keeps_the_rest_of_the_settings(self):
-        settings_module.save_settings({"engine": "DeepL", "lang": "en", "theme": "dark"})
-        app = self._app()
-        app._toggle_theme()
-
-        saved = settings_module.load_settings()
-        self.assertEqual(saved.get("engine"), "DeepL")
-        self.assertEqual(saved.get("lang"), "en")
-        self.assertEqual(saved.get("theme"), "light")
-
-    def test_window_stays_on_screen_during_the_switch(self):
-        """Hiding the window makes the app look like it restarts.
-
-        The window must keep its alpha and must not be withdrawn; the gap of a
-        slow restyle is covered by repainting the background instead.
-        """
-        app = self._app()
-        hidden = []
-
-        def record(*args, **kwargs):
-            hidden.append((args, kwargs))
-
-        for method in ("attributes", "withdraw", "iconify"):
-            setattr(app, method, record)
-
-        app._toggle_theme()
-
-        self.assertEqual(hidden, [], f"окно прятали во время смены темы: {hidden}")
-        self.assertEqual(app.theme_btn.kwargs.get("state"), "normal")
-
-    def test_background_is_repointed_before_the_widgets_are_restyled(self):
-        """The frame shown while Tk is busy must be in the target colour."""
-        app = self._app()
-        observed = []
-        real_apply = app_module.theme.apply
-
-        def spy(root, palette):
-            observed.append(root.kwargs.get("fg_color"))
-            real_apply(root, palette)
-
-        with patch.object(app_module.theme, "apply", side_effect=spy):
-            app._toggle_theme()
-
-        self.assertEqual(observed, [theme.resolve("light").bg])
-        # After the switch the window colour is a (light, dark) pair again.
-        self.assertEqual(app.kwargs.get("fg_color"), theme.color("bg"))
-
-    def test_theme_switch_reports_how_long_it_took(self):
-        app = self._app()
-        lines = []
-        with patch.object(app, "log_line", side_effect=lambda text, tag=None: lines.append(text)):
-            app._toggle_theme()
-
-        self.assertTrue(lines, "переключение темы ничего не записало в журнал")
-        self.assertIn("мс", lines[-1])
-        self.assertIn(app._palette.label, lines[-1])
-
-    def test_log_tags_are_recoloured_after_a_switch(self):
-        app = self._app()
-        dark = theme.log_tag_colors(theme.resolve("dark"))
-        light = theme.log_tag_colors(theme.resolve("light"))
-        self.assertNotEqual(dark["error"], light["error"])
-
-        app._toggle_theme()
-        self.assertEqual(
-            app.log_widget.kwargs.get("fg_color"), app._palette.log_bg
-        )
+        self.assertEqual(app.log_widget.kwargs.get("fg_color"), theme.PALETTE.log_bg)
+        self.assertEqual(app.log_widget.kwargs.get("text_color"), theme.PALETTE.log_fg)
 
     def test_progress_bars_take_fractions_not_maximums(self):
         app = self._app()
@@ -261,56 +179,10 @@ class GuiBuildTests(unittest.TestCase):
         app._update_line_progress(2, 4)
         self.assertEqual(app.progress_lines.kwargs["value"], 0.5)
 
-    def test_widget_colours_follow_the_theme_instead_of_freezing(self):
-        """A colour passed as one string is frozen at construction.
-
-        That is how the header and the bottom buttons stayed dark after a
-        switch to the light theme: the widget kept the old palette's colour.
-        CustomTkinter resolves a ``(light, dark)`` tuple on every switch, so
-        every colour a widget is built with must be such a pair.
-        """
-        tk_stub.CREATED.clear()
-        app = self._app()
-        self.assertTrue(app is not None and tk_stub.CREATED, "виджеты не собраны")
-
-        colour_options = (
-            "fg_color", "text_color", "hover_color", "border_color",
-            "progress_color", "button_color", "button_hover_color",
-            "checkmark_color", "placeholder_text_color", "dropdown_fg_color",
-            "dropdown_text_color", "label_text_color",
-        )
-        frozen = []
-        for widget, kwargs in tk_stub.CREATED:
-            for option in colour_options:
-                value = kwargs.get(option)
-                if value is None or isinstance(value, tuple):
-                    continue
-                if value == "transparent":
-                    continue
-                # The log is a Tk text widget: it is repainted by
-                # _refresh_log_colors because Tk has no appearance modes.
-                if widget == "CTkTextbox":
-                    continue
-                frozen.append((widget, option, value))
-        self.assertEqual(
-            frozen, [],
-            f"цвета заданы строкой и не переключатся с темой: {frozen}",
-        )
-
-    def test_every_palette_role_can_be_used_as_a_theme_pair(self):
-        for role in theme.Palette.__dataclass_fields__:
-            if role in {"name", "label"}:
-                continue
-            pair = theme.color(role)
-            self.assertEqual(pair, (getattr(theme.LIGHT, role), getattr(theme.DARK, role)))
-        with self.assertRaises(KeyError):
-            theme.color("нет_такого_цвета")
-
     def test_report_helper_still_works_after_a_restyle(self):
         from hoi4translator.report import RunReport
 
         app = self._app()
-        app._toggle_theme()
         report = RunReport("Google", "en", "ru", "src", self._directory.name)
         report.record_file("a.yml", "b.yml", "written", translated=2)
         self.assertTrue(app._write_run_report(report, self._directory.name))
@@ -337,11 +209,10 @@ class PreviewWindowTests(unittest.TestCase):
             ["Привет", "Мир $STATE$"],
             on_accept=lambda _edited: None,
             on_cancel=lambda: None,
-            palette=app._palette,
         )
         self.addCleanup(window.destroy)
 
-        self.assertEqual(window._palette, app._palette)
+        self.assertEqual(window._palette, theme.PALETTE)
         self.assertEqual(len(window._entries), 2)
         self.assertEqual(window._entries[0].get(), "Привет")
 
