@@ -21,7 +21,9 @@ Point the tool at a mod's `localisation` folder, pick a target language and an e
 | `hoi4_translator.jar` | JavaSim engine, put it next to the EXE (needs Java 11+) |
 | From source | Python 3.9+, `pip install -r requirements.txt`, then `python hoi4_translator.py` |
 
-![HoI4 Translator main window](docs/images/main-window-dark.png)
+| Dark theme | Light theme |
+| --- | --- |
+| ![Main window, dark theme](docs/images/main-window-dark.png) | ![Main window, light theme](docs/images/main-window-light.png) |
 
 ### What the output looks like
 

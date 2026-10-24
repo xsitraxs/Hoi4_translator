@@ -191,13 +191,61 @@ class App(ctk.CTk):
         icon = "☀" if other.name == "light" else "☾"
         self.theme_btn.configure(text=f"{icon} {other.label}")
 
+    def _save_theme_only(self) -> None:
+        """Persist the theme without touching the OS credential store.
+
+        ``_save_current_settings`` also writes the DeepL key to the keyring and
+        scrubs legacy plaintext keys, which on Windows costs hundreds of
+        milliseconds — for a change that touches one string. A theme click must
+        not wait for that.
+        """
+        save_settings({**load_settings(), "theme": self._theme_name})
+
+    def _set_window_alpha(self, value: float) -> None:
+        """Make the window fully transparent for the duration of a restyle.
+
+        ``withdraw``/``deiconify`` would work too, but they flicker in the
+        taskbar and can drop a maximised window back to its normal size. Alpha
+        leaves the window where it is. Platforms without compositing raise
+        ``TclError`` — then the switch simply looks the way it did before.
+        """
+        try:
+            self.attributes("-alpha", value)
+        except tk.TclError:
+            logger.debug("Window transparency is not supported here", exc_info=True)
+
     def _toggle_theme(self) -> None:
-        self._theme_name = theme.opposite(self._theme_name)
-        self._palette = theme.resolve(self._theme_name)
-        self._apply_theme()
-        self._update_theme_button()
-        self._save_current_settings()
-        self.log_line(f"Тема оформления: {self._palette.label}", 'info')
+        """Switch the palette without leaving a blank window behind.
+
+        Restyling ~80 CustomTkinter widgets runs entirely on the Tk thread, and
+        every one of them redraws its own canvas. Windows cannot repaint the
+        window until the handler returns, so the user stares at an empty frame
+        for the whole switch. Hide the window for the duration and let Tk
+        breathe on both sides; the work itself is unchanged, only what is on
+        screen while it happens.
+        """
+        target = theme.resolve(theme.opposite(self._theme_name))
+        self.theme_btn.configure(text="…", state="disabled")
+        self.update_idletasks()
+
+        started = time.perf_counter()
+        try:
+            self._set_window_alpha(0.0)
+            self._theme_name = target.name
+            self._palette = target
+            self._apply_theme()
+            self._update_theme_button()
+            self.update_idletasks()
+        finally:
+            self._set_window_alpha(1.0)
+            self.theme_btn.configure(state="normal")
+        elapsed = time.perf_counter() - started
+
+        self._save_theme_only()
+        self.log_line(
+            f"Тема оформления: {self._palette.label} ({elapsed * 1000:.0f} мс)",
+            "info",
+        )
 
     def _centre_window(self) -> None:
         """Open in the middle of the screen; never a reason to fail."""

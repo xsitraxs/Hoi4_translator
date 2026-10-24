@@ -21,6 +21,7 @@ import customtkinter as ctk  # noqa: E402  (после установки заг
 
 from hoi4translator import settings as settings_module  # noqa: E402
 from hoi4translator.gui import theme  # noqa: E402
+from hoi4translator.gui import app as app_module  # noqa: E402
 from hoi4translator.gui.app import App  # noqa: E402
 from hoi4translator.gui.preview import PreviewWindow  # noqa: E402
 
@@ -164,6 +165,68 @@ class GuiBuildTests(unittest.TestCase):
         restored = self._app()
         self.assertEqual(restored._theme_name, chosen)
         self.assertEqual(ctk.get_appearance_mode(), chosen)
+
+    def test_theme_switch_does_not_touch_the_credential_store(self):
+        """Saving the theme must not cost a keyring round-trip.
+
+        _save_current_settings() writes the DeepL key to the OS credential store
+        and scrubs legacy plaintext keys; on Windows that is hundreds of
+        milliseconds, and it used to run on every theme click.
+        """
+        app = self._app()
+        with patch.object(app_module, "store_api_key") as store, \
+                patch.object(app_module, "scrub_plaintext_api_keys") as scrub:
+            app._toggle_theme()
+
+        store.assert_not_called()
+        scrub.assert_not_called()
+        self.assertEqual(
+            settings_module.load_settings().get("theme"),
+            theme.opposite(theme.DEFAULT_THEME),
+        )
+
+    def test_theme_switch_keeps_the_rest_of_the_settings(self):
+        settings_module.save_settings({"engine": "DeepL", "lang": "en", "theme": "dark"})
+        app = self._app()
+        app._toggle_theme()
+
+        saved = settings_module.load_settings()
+        self.assertEqual(saved.get("engine"), "DeepL")
+        self.assertEqual(saved.get("lang"), "en")
+        self.assertEqual(saved.get("theme"), "light")
+
+    def test_window_is_hidden_while_the_widgets_are_restyled(self):
+        """The blank white frame on a slow machine must not reach the screen.
+
+        Restyling runs on the Tk thread, so the window cannot repaint until the
+        handler returns. Alpha is dropped before the switch and restored after.
+        """
+        app = self._app()
+        seen = []
+        original = app._set_window_alpha
+
+        def record(value):
+            seen.append((value, app._theme_name))
+            original(value)
+
+        app._set_window_alpha = record
+        app._toggle_theme()
+
+        self.assertEqual([value for value, _ in seen], [0.0, 1.0])
+        # The window is hidden under the *old* theme and restored under the new.
+        self.assertEqual(seen[0][1], theme.DEFAULT_THEME)
+        self.assertEqual(seen[1][1], theme.opposite(theme.DEFAULT_THEME))
+        self.assertEqual(app.theme_btn.kwargs.get("state"), "normal")
+
+    def test_theme_switch_reports_how_long_it_took(self):
+        app = self._app()
+        lines = []
+        with patch.object(app, "log_line", side_effect=lambda text, tag=None: lines.append(text)):
+            app._toggle_theme()
+
+        self.assertTrue(lines, "переключение темы ничего не записало в журнал")
+        self.assertIn("мс", lines[-1])
+        self.assertIn(app._palette.label, lines[-1])
 
     def test_log_tags_are_recoloured_after_a_switch(self):
         app = self._app()
