@@ -217,7 +217,6 @@ class App(ctk.CTk):
             self.log_line(f"📦 Выбран JAR: {os.path.basename(f)}", 'info')
 
     def _build_ui(self):
-        p = self._palette
 
         def card(parent, title):
             """A titled panel: CustomTkinter has no label frame."""
@@ -225,44 +224,44 @@ class App(ctk.CTk):
             frame.pack(fill='x', pady=(0, 10))
             ctk.CTkLabel(
                 frame, text=title, font=theme.font(13, "bold"),
-                text_color=p.accent, anchor='w',
+                text_color=theme.color('accent'), anchor='w',
             ).pack(fill='x', padx=16, pady=(12, 4))
             inner = ctk.CTkFrame(frame, fg_color='transparent')
             inner.pack(fill='both', expand=True, padx=16, pady=(0, 14))
             return frame, inner
 
         # --- шапка ---
-        header = ctk.CTkFrame(self, corner_radius=0, fg_color=p.panel, height=62)
+        header = ctk.CTkFrame(self, corner_radius=0, fg_color=theme.color('panel'), height=62)
         header.pack(fill='x')
         ctk.CTkLabel(
             header, text="Hoi4 Translator", font=theme.font(21, "bold"),
-            text_color=p.accent,
+            text_color=theme.color('accent'),
         ).pack(side='left', padx=(20, 10), pady=14)
         ctk.CTkLabel(
             header,
             text=f"v{__version__}  ·  перевод локализации Hearts of Iron IV",
-            font=theme.font(12), text_color=p.fg_subtle,
+            font=theme.font(12), text_color=theme.color('fg_subtle'),
         ).pack(side='left', pady=(18, 0))
         self.theme_btn = ctk.CTkButton(
-            header, text="", width=132, height=32, corner_radius=8,
-            fg_color=p.panel_alt, hover_color=p.border, text_color=p.fg,
+            header, text="", width=150, height=32, corner_radius=8,
+            fg_color=theme.color('panel_alt'), hover_color=theme.color('border'), text_color=theme.color('fg'),
             font=theme.font(12), command=self._toggle_theme,
         )
         self.theme_btn.pack(side='right', padx=20)
         self._update_theme_button()
 
         # --- статус-бар (внизу) ---
-        status_bar = ctk.CTkFrame(self, corner_radius=0, fg_color=p.panel, height=34)
+        status_bar = ctk.CTkFrame(self, corner_radius=0, fg_color=theme.color('panel'), height=34)
         status_bar.pack(fill='x', side='bottom')
         self.status_var = tk.StringVar(value="Готов к работе")
         self.speed_var = tk.StringVar(value="")
         ctk.CTkLabel(
             status_bar, textvariable=self.status_var, font=theme.font(12),
-            text_color=p.fg_muted, anchor='w',
+            text_color=theme.color('fg_muted'), anchor='w',
         ).pack(side='left', padx=18, pady=6)
         ctk.CTkLabel(
             status_bar, textvariable=self.speed_var, font=theme.font(12),
-            text_color=p.success, anchor='e',
+            text_color=theme.color('success'), anchor='e',
         ).pack(side='right', padx=18, pady=6)
 
         # --- кнопки ---
@@ -270,19 +269,21 @@ class App(ctk.CTk):
         fb.pack(fill='x', side='bottom', padx=16, pady=(0, 12))
         self.start_btn = ctk.CTkButton(
             fb, text="▶ НАЧАТЬ ПЕРЕВОД", height=40, corner_radius=8,
-            fg_color=p.accent, hover_color=p.accent_hover, text_color=p.on_accent,
+            fg_color=theme.color('accent'), hover_color=theme.color('accent_hover'),
+            text_color=theme.color('on_accent'),
             font=theme.font(13, "bold"), command=self.start,
         )
         self.start_btn.pack(side='left', fill='x', expand=True, padx=(0, 6))
         self.stop_btn = ctk.CTkButton(
             fb, text="■ СТОП", height=40, corner_radius=8, state='disabled',
-            fg_color=p.panel_alt, hover_color=p.error, text_color=p.error,
+            fg_color=theme.color('panel_alt'), hover_color=theme.color('error'), text_color=theme.color('error'),
             font=theme.font(13, "bold"), command=self.stop,
         )
         self.stop_btn.pack(side='left', fill='x', expand=True, padx=6)
         ctk.CTkButton(
             fb, text="Очистить лог", height=40, width=150, corner_radius=8,
-            fg_color=p.panel_alt, hover_color=p.border, font=theme.font(12),
+            fg_color=theme.color('panel_alt'), hover_color=theme.color('border'),
+            text_color=theme.color('fg'), font=theme.font(12),
             command=self.clear_log,
         ).pack(side='left', fill='x', expand=True, padx=(6, 0))
 
@@ -372,7 +373,7 @@ class App(ctk.CTk):
 
         self.api_lbl = ctk.CTkLabel(
             engine, text="DeepL API Key:", width=112, anchor='w',
-            text_color=p.fg_subtle,
+            text_color=theme.color('fg_subtle'),
         )
         self.api_lbl.grid(row=3, column=0, sticky='w', pady=4)
         self.api_key_var = tk.StringVar()
@@ -391,7 +392,7 @@ class App(ctk.CTk):
         self.api_status_var = tk.StringVar(value="")
         self.api_status_lbl = ctk.CTkLabel(
             api_actions, textvariable=self.api_status_var, width=96,
-            font=theme.font(12), text_color=p.fg_muted,
+            font=theme.font(12), text_color=theme.color('fg_muted'),
         )
         self.api_status_lbl.pack(side='left', padx=8)
 
@@ -403,7 +404,7 @@ class App(ctk.CTk):
         self.semaphore_var = tk.IntVar(value=SEMAPHORE_LIMIT)
         self.sem_lbl = ctk.CTkLabel(
             parallelism, text=str(SEMAPHORE_LIMIT), width=34, font=theme.font(12),
-            text_color=p.fg_muted,
+            text_color=theme.color('fg_muted'),
         )
         self.sem_lbl.pack(side='right')
         ctk.CTkSlider(
@@ -435,7 +436,7 @@ class App(ctk.CTk):
         self.cache_info_var = tk.StringVar(value="")
         ctk.CTkLabel(
             cache_row, textvariable=self.cache_info_var, font=theme.font(12),
-            text_color=p.info,
+            text_color=theme.color('info'),
         ).pack(side='right')
         ctk.CTkButton(
             cache_row, text="Инфо кэша", width=110, font=theme.font(12),
@@ -469,11 +470,11 @@ class App(ctk.CTk):
         self.report_info_var = tk.StringVar(value="")
         ctk.CTkLabel(
             report_row, textvariable=self.report_info_var, font=theme.font(12),
-            text_color=p.info,
+            text_color=theme.color('info'),
         ).pack(side='right', padx=10)
         ctk.CTkLabel(
             report_row, text="Отчёт о прогоне (json/csv) — рядом с папкой перевода",
-            font=theme.font(12), text_color=p.fg_subtle,
+            font=theme.font(12), text_color=theme.color('fg_subtle'),
         ).pack(side='left')
 
         self.reuse_fallback_cache_var = tk.BooleanVar(value=False)
@@ -491,14 +492,14 @@ class App(ctk.CTk):
         files_row.pack(fill='x', pady=4)
         ctk.CTkLabel(
             files_row, text="Файлы:", width=112, anchor='w', font=theme.font(12),
-            text_color=p.fg_muted,
+            text_color=theme.color('fg_muted'),
         ).pack(side='left')
         self.progress = ctk.CTkProgressBar(files_row, height=12, corner_radius=6)
         self.progress.set(0)
         self.progress.pack(side='left', fill='x', expand=True, padx=8)
         self.progress_file_lbl = ctk.CTkLabel(
             files_row, text="0/0", width=76, font=theme.font(12),
-            text_color=p.fg_muted,
+            text_color=theme.color('fg_muted'),
         )
         self.progress_file_lbl.pack(side='left')
 
@@ -506,14 +507,14 @@ class App(ctk.CTk):
         lines_row.pack(fill='x', pady=(8, 0))
         ctk.CTkLabel(
             lines_row, text="Строки:", width=112, anchor='w', font=theme.font(12),
-            text_color=p.fg_muted,
+            text_color=theme.color('fg_muted'),
         ).pack(side='left')
         self.progress_lines = ctk.CTkProgressBar(lines_row, height=12, corner_radius=6)
         self.progress_lines.set(0)
         self.progress_lines.pack(side='left', fill='x', expand=True, padx=8)
         self.progress_lines_lbl = ctk.CTkLabel(
             lines_row, text="0/0", width=76, font=theme.font(12),
-            text_color=p.fg_muted,
+            text_color=theme.color('fg_muted'),
         )
         self.progress_lines_lbl.pack(side='left')
 
@@ -524,7 +525,7 @@ class App(ctk.CTk):
         log_header.pack(fill='x', padx=16, pady=(12, 6))
         ctk.CTkLabel(
             log_header, text="Журнал", font=theme.font(13, "bold"),
-            text_color=p.accent, anchor='w',
+            text_color=theme.color('accent'), anchor='w',
         ).pack(side='left')
         self.log_widget = ctk.CTkTextbox(
             log_card, corner_radius=8, font=theme.font(12, mono=True),
@@ -545,11 +546,11 @@ class App(ctk.CTk):
     def _toggle_api_field(self, event=None):
         if self.engine_var.get() == "DeepL":
             self.api_entry.configure(state='normal')
-            self.api_lbl.configure(text_color=self._palette.fg)
+            self.api_lbl.configure(text_color=theme.color('fg'))
             self.verify_btn.configure(state='normal')
         else:
             self.api_entry.configure(state='disabled')
-            self.api_lbl.configure(text_color=self._palette.fg_subtle)
+            self.api_lbl.configure(text_color=theme.color('fg_subtle'))
             self.verify_btn.configure(state='disabled')
             self.api_status_var.set("")
 
@@ -648,15 +649,15 @@ class App(ctk.CTk):
         api_key = self.api_key_var.get().strip()
         if not api_key:
             self.api_status_var.set("Нет ключа")
-            self.api_status_lbl.configure(text_color=self._palette.error)
+            self.api_status_lbl.configure(text_color=theme.color('error'))
             return
         if not DEEPL_OK or deepl is None:
             self.api_status_var.set("Нет клиента")
-            self.api_status_lbl.configure(text_color=self._palette.error)
+            self.api_status_lbl.configure(text_color=theme.color('error'))
             return
 
         self.api_status_var.set("Проверка...")
-        self.api_status_lbl.configure(text_color=self._palette.warning)
+        self.api_status_lbl.configure(text_color=theme.color('warning'))
         self.verify_btn.configure(state='disabled')
 
         def check():
@@ -682,11 +683,11 @@ class App(ctk.CTk):
         def on_done(success, msg):
             if success:
                 self.api_status_var.set("✓ Валиден")
-                self.api_status_lbl.configure(text_color=self._palette.success)
+                self.api_status_lbl.configure(text_color=theme.color('success'))
                 self.log_line("DeepL API ключ успешно проверен!", 'success')
             else:
                 self.api_status_var.set(f"✗ {msg}")
-                self.api_status_lbl.configure(text_color=self._palette.error)
+                self.api_status_lbl.configure(text_color=theme.color('error'))
                 self.log_line(f"DeepL API проверка не пройдена: {msg}", 'error')
             self.verify_btn.configure(state='normal')
 

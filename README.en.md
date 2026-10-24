@@ -21,11 +21,14 @@ Point the tool at a mod's `localisation` folder, pick a target language and an e
 | `hoi4_translator.jar` | JavaSim engine, put it next to the EXE (needs Java 11+) |
 | From source | Python 3.9+, `pip install -r requirements.txt`, then `python hoi4_translator.py` |
 
-<!--
-Drop screenshots / a GIF into docs/images/, then uncomment:
+![HoI4 Translator main window, dark theme](docs/images/main-window-dark.png)
 
-![Main window](docs/images/main-window.png)
+<!--
+Still to capture in docs/images/, then uncomment:
+
+![Light theme](docs/images/main-window-light.png)
 ![Translation preview](docs/images/preview.png)
+![Demo](docs/images/demo.gif)
 -->
 
 ## 🔒 Is the EXE safe to run?
