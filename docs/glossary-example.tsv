@@ -1,0 +1,12 @@
+# Пример глоссария HoI4 Localization Tool.
+# Термин<TAB>перевод. Регистр не важен, совпадения только целыми словами.
+# Загружается в GUI (поле «Глоссарий») или через CLI: --glossary docs/glossary-example.tsv
+Division	Дивизия
+Infantry	Пехотная
+Soviet Union	Советский Союз
+United States	Соединённые Штаты
+Political Power	Политическая власть
+World Tension	Мировая напряжённость
+War Support	Поддержка войны
+Stability	Стабильность
+Focus Tree	Дерево фокусов

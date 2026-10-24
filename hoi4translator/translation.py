@@ -37,10 +37,14 @@ from .validation import ValidationReport, validate_preview_translations
 
 
 class AsyncTranslator:
+    #: Class-level default: some tests build the object without __init__ to
+    #: exercise a single method, and a missing attribute must not crash them.
+    glossary = None
+
     def __init__(self, engine: str, api_key: Optional[str] = None,
                  source_lang: str = "en", java_jar_path: Optional[str] = None,
                  concurrency: Optional[int] = None, reuse_fallback_cache: bool = False,
-                 fallback_notifier=None):
+                 fallback_notifier=None, glossary=None):
         self.engine = engine
         self.api_key = api_key
         self.source_lang = source_lang
@@ -50,6 +54,9 @@ class AsyncTranslator:
         self.concurrency = max(1, int(concurrency or SEMAPHORE_LIMIT))
         self.reuse_fallback_cache = reuse_fallback_cache
         self.fallback_notifier = fallback_notifier
+        # A glossary rewrites the text before it reaches an engine, so a cached
+        # translation made without it must not be served — and vice versa.
+        self.glossary = glossary
         self.fallback_counts: Dict[str, int] = {}
         self._deepl_client = None
         self._deepl_lock = threading.Lock()
@@ -113,8 +120,9 @@ class AsyncTranslator:
             return text
 
         # By default only the selected engine may answer from the cache; see
-        # _cache_engines() for why cross-engine reuse is opt-in.
-        for cached_engine in self._cache_engines():
+        # _cache_engines() for why cross-engine reuse is opt-in. A glossary
+        # changes what the engine is asked, so its cache would be a lie.
+        for cached_engine in ([] if self.glossary else self._cache_engines()):
             cached = self.cache.get(text, self.source_lang, target_lang, cached_engine)
             if cached is not None:
                 cached_issues = validate_preview_translations([text], [cached])
@@ -127,11 +135,14 @@ class AsyncTranslator:
                 logger.debug("Cache hit (%s)", cached_engine)
                 return cached
 
-        protected, tokens = protect_placeholders(text)
+        protected, tokens = protect_placeholders(text, self.glossary)
 
         clean = re.sub(r'<<PH\d+>>', '', protected).strip()
         if not clean:
-            return text
+            # The whole value was a glossary term or a marker: there is nothing
+            # to translate, but the glossary translation still has to be used.
+            restored_only = restore_placeholders(protected, tokens)
+            return restored_only if restored_only != text else text
 
         # --- 7. ФОЛБЭК-ЦЕПОЧКА ---
         result_text = protected
@@ -180,7 +191,7 @@ class AsyncTranslator:
 
         self.validation_report.record(_file_ctx, _key_ctx, issues, auto_fixed=False)
 
-        if final_text and final_text != text and not issues:
+        if final_text and final_text != text and not issues and not self.glossary:
             self.cache.set(text, final_text, self.source_lang, target_lang, used_engine)
 
         return final_text

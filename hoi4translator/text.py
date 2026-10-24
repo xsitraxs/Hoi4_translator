@@ -88,7 +88,14 @@ class PostProcessor:
         return cls._LEFTOVER_PH_RE.sub('', protected)
 
 
-def protect_placeholders(text: str):
+def protect_placeholders(text: str, glossary=None):
+    """Mask game markers (and glossary terms) before sending text to an engine.
+
+    Glossary terms are masked *after* the markers and restored with their pinned
+    translation, so an engine can neither translate nor reorder them. The
+    returned token list holds the text to write back for every mask, which is
+    why the glossary needs no separate restore step.
+    """
     tokens = []
     def replacer(m):
         tokens.append(m.group(0))
@@ -96,6 +103,15 @@ def protect_placeholders(text: str):
 
     # 1. Защищаем маркеры
     protected = PLACEHOLDER_RE.sub(replacer, text)
+
+    # 1a. Термины из глоссария: маркер восстанавливается уже переводом
+    if glossary:
+        pattern = glossary.pattern
+        if pattern is not None:
+            def glossary_replacer(m):
+                tokens.append(glossary.lookup(m.group(0)))
+                return f'<<PH{len(tokens)-1}>>'
+            protected = pattern.sub(glossary_replacer, protected)
     # 2. Вставляем невидимый разделитель между соседними маркерами, чтобы движок не склеил их в одно слово
     # FIX: \u200B в строке замены re.sub вызывает bad escape — используем lambda
     protected = re.sub(r'(<<PH\d+>>)(<<PH\d+>>)', lambda m: m.group(1) + '\u200B' + m.group(2), protected)

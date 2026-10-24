@@ -128,6 +128,7 @@ class GuiBuildTests(unittest.TestCase):
             "broken_line_var", "report_info_var", "progress", "progress_lines",
             "progress_file_lbl", "progress_lines_lbl", "log_widget",
             "start_btn", "stop_btn", "status_var", "speed_var",
+            "glossary_var", "vanilla_var", "browse_glossary", "browse_vanilla",
         ):
             self.assertTrue(hasattr(app, attribute), f"нет атрибута {attribute}")
 

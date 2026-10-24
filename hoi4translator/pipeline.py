@@ -142,6 +142,7 @@ def process_file_sync(
     broken_line_mode: BrokenLineMode = BrokenLineMode.REJECT_FILE,
     report: Optional[RunReport] = None,
     report_label: Optional[str] = None,
+    vanilla=None,
 ) -> FileProcessResult:
     # The body fills `state`; the report is written from it whatever the outcome.
     state: Dict[str, Any] = {
@@ -154,6 +155,7 @@ def process_file_sync(
         "stale": [],
         "repaired": [],
         "unverifiable": [],
+        "reused": 0,
         "hashes": {},
         "report": report,
     }
@@ -161,7 +163,7 @@ def process_file_sync(
         return _process_file(
             src_path, dst_path, translator, log_cb, skip_translated, stop_event,
             loop, target_lang, line_progress_cb, preview_cb, broken_line_mode,
-            rel_path=os.path.basename(src_path), state=state,
+            rel_path=os.path.basename(src_path), state=state, vanilla=vanilla,
         )
     finally:
         if report is not None:
@@ -171,13 +173,14 @@ def process_file_sync(
                 translated=state["written"], skipped=state["skipped"],
                 stale=len(state["stale"]) + len(state["repaired"]),
                 recovered=len(state["recovered"]), broken=len(state["broken"]),
-                message=state["message"],
+                reused=state["reused"], message=state["message"],
             )
 
 
 def _process_file(
     src_path, dst_path, translator, log_cb, skip_translated, stop_event, loop,
     target_lang, line_progress_cb, preview_cb, broken_line_mode, *, rel_path, state,
+    vanilla=None,
 ) -> FileProcessResult:
     """Body of process_file_sync; `state` is shared with the report recorder."""
     report = state.get("report")
@@ -292,6 +295,23 @@ def _process_file(
                     skipped += 1
                     continue
 
+        # The game already translates many strings the mod copies verbatim.
+        # Reusing that translation is both better and cheaper than asking an
+        # engine for a second, different rendering of the same sentence.
+        if vanilla is not None:
+            reused_value = vanilla.lookup(value)
+            if reused_value:
+                reused_issues = validate_preview_translations([value], [reused_value])
+                if not reused_issues:
+                    out_lines[i] = f'{prefix}"{reused_value}"{suffix}{line_ending}'
+                    state["reused"] += 1
+                    continue
+                log_cb(
+                    f"  Ванильный перевод [{key}] отклонён проверкой формата: "
+                    f"{', '.join(reused_issues)}; строка будет переведена движком",
+                    'warning',
+                )
+
         to_translate_idx.append(i)
         to_translate_val.append(value)
         to_translate_keys.append(key)
@@ -351,6 +371,8 @@ def _process_file(
             )
         if skipped:
             log_cb(f"  Пропущено (уже переведено): {skipped}", 'info')
+        if state["reused"]:
+            log_cb(f"  Из ванильного перевода: {state['reused']}", 'info')
         return finish("written", "", 0)
 
     file_stop_event = _CombinedStopEvent(stop_event)
@@ -499,6 +521,8 @@ def _process_file(
         )
     if skipped:
         log_cb(f"  Пропущено (уже переведено): {skipped}", 'info')
+    if state["reused"]:
+        log_cb(f"  Из ванильного перевода: {state['reused']}", 'info')
 
     if broken_in_file:
         log_cb(f"  ⚠ Битых строк: {len(broken_in_file)}", 'warning')
