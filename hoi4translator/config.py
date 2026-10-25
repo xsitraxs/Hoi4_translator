@@ -6,7 +6,7 @@ import tempfile
 from logging.handlers import RotatingFileHandler
 
 # Keep in sync with the git tag of a release (CI compares them).
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 
 # Default concurrency for a translation run. Per-run values are passed to
 # AsyncTranslator instead of mutating this global from a worker thread.
