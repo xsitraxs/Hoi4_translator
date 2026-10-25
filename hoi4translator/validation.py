@@ -135,6 +135,16 @@ def validate_pairs(originals: List[str], translations: List[str]) -> List[List[s
     return rows
 
 
+def validate_line(original: str, translated: str) -> List[str]:
+    """Issues of a single row; an empty list means the row can be written.
+
+    One line needs a verdict without building two temporary lists around
+    validate_pairs, so the engine fallback can ask "is this answer usable?"
+    for every attempt.
+    """
+    return validate_pairs([original], [translated])[0]
+
+
 def source_issues(original: str) -> List[str]:
     """Problems the mod's own text already has, before any translation.
 

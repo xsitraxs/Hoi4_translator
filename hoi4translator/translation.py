@@ -18,7 +18,11 @@ from .config import (
     deepl,
     logger,
 )
-from .errors import TranslationCancelled, TranslationFailed
+from .errors import (
+    TranslationCancelled,
+    TranslationFailed,
+    TranslationValidationFailed,
+)
 from .java_service import JavaTranslatorService
 from .providers import (
     FALLBACK_CHAIN,
@@ -33,7 +37,7 @@ from .text import (
     restore_placeholders,
     split_long_text,
 )
-from .validation import ValidationReport, validate_preview_translations
+from .validation import ValidationReport, validate_line, validate_preview_translations
 
 
 class AsyncTranslator:
@@ -144,57 +148,82 @@ class AsyncTranslator:
             restored_only = restore_placeholders(protected, tokens)
             return restored_only if restored_only != text else text
 
-        # --- 7. ФОЛБЭК-ЦЕПОЧКА ---
-        result_text = protected
-        used_engine = self.engine
+        # --- 7. ФОЛБЭК-ЦЕПОЧКА (по одной строке) ---
+        # The chain used to advance only when an engine raised. An answer that
+        # lost a $STATE$ or broke the one-line format was treated as success: it
+        # went into the cache and the file, and the damage showed up in the game.
         engines_to_try = [self.engine] + FALLBACK_CHAIN.get(self.engine, [])
+        attempts: List[str] = []
+        issues: List[str] = []
+        candidate = protected
+        answered = False
+        last_error: Optional[Exception] = None
 
         async with self._semaphore:
             for eng in engines_to_try:
                 try:
-                    result_text = await self._call_engine(eng, protected, target_lang, retries)
-                    used_engine = eng
-                    if used_engine != self.engine:
-                        # A paid engine silently degrading to a free one must be
-                        # visible in the UI, not only in the log file.
-                        logger.info(f"Фолбэк сработал: {self.engine} → {used_engine}")
-                        self._note_fallback(used_engine)
-                    break
+                    raw_text = await self._call_engine(eng, protected, target_lang, retries)
                 except Exception as e:
+                    attempts.append(f"{eng}: {e}")
+                    last_error = e
                     logger.warning(f"Движок {eng} упал: {e}. Пробуем следующий...")
-                    if eng == engines_to_try[-1]:
-                        # Never write untranslated source text as if translation
-                        # succeeded; fail the file so the UI reports the outage.
-                        logger.error("Все движки недоступны для ключа %s", _key_ctx or "?")
-                        raise TranslationFailed(
-                            "Все доступные движки перевода завершились ошибкой"
-                        ) from e
+                    continue
 
-        # Восстанавливаем плейсхолдеры
-        final_text = restore_placeholders(result_text, tokens)
+                answered = True
 
-        # --- 6. ВАЛИДАЦИЯ ---
-        issues = validate_preview_translations([text], [final_text])
-        if issues:
-            # A missing token cannot be safely relocated to the end of the
-            # sentence. Leave it visible to validation/preview instead.
-            logger.warning(f"Битый перевод [{_key_ctx}]: {issues}")
+                # Restore the protected markers and judge the answer: a lost
+                # marker or a broken format is a failed attempt, not something
+                # we are allowed to hand to the pipeline.
+                candidate = restore_placeholders(raw_text, tokens)
+                issues = validate_line(text, candidate)
+                if not issues:
+                    candidate = PostProcessor.process(candidate, target_lang)
+                    issues = validate_line(text, candidate)
+                    if issues:
+                        # Post-processing must not silently damage a token that
+                        # was intact right after the translation itself.
+                        attempts.append(
+                            f"{eng}: постобработка нарушила формат ({'; '.join(issues)})"
+                        )
+                else:
+                    attempts.append(f"{eng}: {'; '.join(issues)}")
 
-        # --- 5. ПОСТОБРАБОТКА ---
-        final_text = PostProcessor.process(final_text, target_lang)
-        final_issues = validate_preview_translations([text], [final_text])
-        issues = final_issues
-        if final_issues:
-            # Post-processing must not silently damage a token that was valid
-            # immediately after translation/restoration.
-            logger.warning(f"Постобработка нарушила формат [{_key_ctx}]: {final_issues}")
+                if issues:
+                    logger.warning(
+                        f"Движок {eng} вернул битый перевод [{_key_ctx}]: "
+                        f"{'; '.join(issues)}"
+                    )
+                    continue
 
-        self.validation_report.record(_file_ctx, _key_ctx, issues, auto_fixed=False)
+                if eng != self.engine:
+                    # A paid engine silently degrading to a free one must be
+                    # visible in the UI, not only in the log file.
+                    logger.info(f"Фолбэк сработал: {self.engine} → {eng}")
+                    self._note_fallback(eng)
 
-        if final_text and final_text != text and not issues and not self.glossary:
-            self.cache.set(text, final_text, self.source_lang, target_lang, used_engine)
+                self.validation_report.record(_file_ctx, _key_ctx, [], auto_fixed=False)
+                if candidate and candidate != text and not self.glossary:
+                    # Only a value that passed validation may be reused later.
+                    self.cache.set(text, candidate, self.source_lang, target_lang, eng)
+                return candidate
 
-        return final_text
+        if not answered:
+            # Never write untranslated source text as if translation succeeded;
+            # fail the file so the UI reports the outage.
+            logger.error("Все движки недоступны для ключа %s", _key_ctx or "?")
+            raise TranslationFailed(
+                "Все доступные движки перевода завершились ошибкой"
+            ) from last_error
+
+        # Every engine answered, but none of the answers can be written.
+        self.validation_report.record(
+            _file_ctx, _key_ctx, issues or ["перевод не прошёл проверку"], auto_fixed=False
+        )
+        raise TranslationValidationFailed(
+            f"Ни один движок не вернул корректный перевод [{_key_ctx or '?'}]: "
+            + "; ".join(attempts),
+            source=text, candidate=candidate, issues=issues, attempts=attempts,
+        )
 
     async def _call_engine(self, engine: str, protected: str, target: str, retries: int) -> str:
         """Вызов конкретного движка по имени."""
@@ -339,11 +368,19 @@ class AsyncTranslator:
 
         async def translate_one(i: int, text: str):
             nonlocal done_count
-            result = await self.translate_text_async(
-                text, target_lang,
-                _file_ctx=file_ctx,
-                _key_ctx=(keys[i] if keys else str(i))
-            )
+            key = keys[i] if keys else str(i)
+            try:
+                result = await self.translate_text_async(
+                    text, target_lang, _file_ctx=file_ctx, _key_ctx=key
+                )
+            except TranslationValidationFailed as error:
+                # One unusable line must not cost the rest of the file. The row
+                # is already in the validation report, and the value below goes
+                # to the pipeline unvalidated on purpose: the pipeline checks
+                # every row itself and decides between refusing the file and
+                # keeping the English text for this line. Nothing was cached.
+                logger.warning("Строка [%s] не переведена: %s", key, error)
+                result = error.candidate or text
             if line_progress_cb:
                 async with progress_lock:
                     done_count += 1

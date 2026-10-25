@@ -41,7 +41,11 @@ from .config import (
     atomic_write_text,
     logger,
 )
-from .errors import TranslationCancelled, TranslationFailed
+from .errors import (
+    TranslationCancelled,
+    TranslationFailed,
+    TranslationValidationFailed,
+)
 from .glossary import Glossary, GlossaryError, load_glossary
 from .inspect import FileInspection, inspect_file, inspect_files
 from .java_service import (
@@ -102,6 +106,8 @@ from .translation import AsyncTranslator
 from .validation import (
     PlaceholderValidator,
     ValidationReport,
+    validate_line,
+    validate_pairs,
     validate_preview_translations,
 )
 from .vanilla import VanillaIndex, build_vanilla_index
@@ -114,7 +120,7 @@ __all__ = [
     # logging and io
     "logger", "atomic_write_lines", "atomic_write_text",
     # errors
-    "TranslationCancelled", "TranslationFailed",
+    "TranslationCancelled", "TranslationFailed", "TranslationValidationFailed",
     # localisation
     "HOI4_LANGUAGE_NAMES", "HOI4_LANGUAGE_NAMES_BY_CODE", "HOI4_TARGET_LANGS",
     "PLACEHOLDER_RE", "VALUE_RE", "collect_yml_files", "get_hoi4_language_name",
@@ -129,7 +135,8 @@ __all__ = [
     "VanillaIndex", "build_vanilla_index",
     "FileInspection", "inspect_file", "inspect_files",
     # validation
-    "PlaceholderValidator", "ValidationReport", "validate_preview_translations",
+    "PlaceholderValidator", "ValidationReport", "validate_line",
+    "validate_pairs", "validate_preview_translations",
     # providers
     "FALLBACK_CHAIN", "GOOGLE_ENDPOINT_ENGINE", "provider_language_code",
     # java service
