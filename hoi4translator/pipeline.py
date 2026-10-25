@@ -9,8 +9,6 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Un
 from .config import atomic_write_lines, logger
 from .errors import TranslationCancelled
 from .localisation import (
-    VALUE_RE,
-    VALUE_SUFFIX_RE,
     _prepare_target_localisation_lines,
     _split_line_ending,
     get_hoi4_language_name,
@@ -18,10 +16,15 @@ from .localisation import (
     normalize_key,
     read_localisation_lines,
     source_text_hash,
+    split_value_line,
 )
 from .report import RunReport
 from .text import zip_equal
-from .validation import validate_pairs, validate_preview_translations
+from .validation import (
+    split_row_issues,
+    validate_pairs,
+    validate_preview_translations,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard
     from .translation import AsyncTranslator
@@ -247,17 +250,14 @@ def _process_file(
             continue
 
         line_content, line_ending = _split_line_ending(line)
-        match = VALUE_RE.fullmatch(line_content)
-        if not match:
+        parts = split_value_line(line_content)
+        if parts is None:
             stripped = line_content.strip()
             if stripped and not stripped.startswith('#') and ':' in stripped:
                 malformed_lines.append(i + 1)
             continue
 
-        prefix, value, suffix = match.group(1), match.group(2), match.group(3)
-        if not VALUE_SUFFIX_RE.fullmatch(suffix):
-            malformed_lines.append(i + 1)
-            continue
+        prefix, value, suffix = parts
         # KEY:0 and KEY:1 are the same localisation key (the number is only a
         # revision marker), so comparisons and duplicate detection use the
         # version-less form.
@@ -469,34 +469,58 @@ def _process_file(
         log_cb(f"  Файл не записан: {error}", 'error')
         return finish("rejected", "перевод нарушает формат", None)
     broken_indexes = [index for index, issues in enumerate(row_issues) if issues]
-    if broken_indexes:
+    introduced_rows: Dict[int, List[str]] = {}
+    inherited_rows: Dict[int, List[str]] = {}
+    for index in broken_indexes:
+        inherited, introduced = split_row_issues(
+            to_translate_val[index], row_issues[index]
+        )
+        if introduced:
+            introduced_rows[index] = introduced
+        else:
+            inherited_rows[index] = inherited
+
+    # The mod's own markup problems are written as they are and only reported:
+    # the translation preserved them, and the game already reads them that way.
+    for index, issues in inherited_rows.items():
+        key = to_translate_keys[index]
+        log_cb(
+            f"  Строка [{key}] записана как есть, проблема в исходнике: "
+            f"{', '.join(issues)}",
+            'warning',
+        )
+        if report is not None:
+            report.record_broken(rel_path, key, issues, recovered=False)
+
+    if introduced_rows:
         if broken_line_mode is not BrokenLineMode.KEEP_ORIGINAL:
-            issues = validate_preview_translations(to_translate_val, approved_values)
+            problems = [
+                f"Строка {index + 1}: {', '.join(issues)}"
+                for index, issues in introduced_rows.items()
+            ]
             log_cb(
                 "  Файл не записан: перевод нарушает формат локализации: "
-                + "; ".join(issues[:5]),
+                + "; ".join(problems[:5]),
                 'error',
             )
             return finish("rejected", "перевод нарушает формат", None)
 
-        for index in broken_indexes:
+        for index, issues in introduced_rows.items():
             key = to_translate_keys[index]
             log_cb(
                 f"  Строка [{key}] заменена оригиналом: "
-                f"{', '.join(row_issues[index])}",
+                f"{', '.join(issues)}",
                 'warning',
             )
             recovered_keys.append(key)
             approved_values[index] = to_translate_val[index]
             if report is not None:
-                report.record_broken(
-                    rel_path, key, row_issues[index], recovered=True
-                )
+                report.record_broken(rel_path, key, issues, recovered=True)
             # The English text is now in the target file; without the marker the
             # next run would treat it as a finished translation and keep it.
             file_key_hashes[key] = RECOVERED_HASH_MARKER
         log_cb(
-            f"  Битых строк заменено оригиналом: {len(broken_indexes)} "
+            f"  Битых строк заменено оригиналом: {len(introduced_rows)} "
             "(исправьте их вручную или переведите файл заново)",
             'warning',
         )

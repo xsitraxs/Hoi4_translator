@@ -16,10 +16,10 @@ from typing import Dict, List, Optional
 
 from .config import logger
 from .localisation import (
-    VALUE_RE,
     get_hoi4_language_name,
     normalize_key,
     read_localisation_lines,
+    split_value_line,
 )
 
 #: Values shorter than this are markers, numbers or single letters; matching
@@ -40,12 +40,12 @@ def read_values(path: str) -> Dict[str, str]:
         logger.warning("Ванильный файл пропущен (%s): %s", path, error)
         return values
     for line in lines:
-        match = VALUE_RE.match(line.rstrip("\r\n"))
-        if not match:
+        parts = split_value_line(line.rstrip("\r\n"))
+        if parts is None:
             continue
         # KEY:0 and KEY:3 are the same key; the game's own files are full of
         # revision numbers, so they must not decide whether a line matches.
-        values[normalize_key(match.group(1))] = match.group(2)
+        values[normalize_key(parts[0])] = parts[1]
     return values
 
 

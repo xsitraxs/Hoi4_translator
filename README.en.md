@@ -96,7 +96,11 @@ python hoi4_translator.py --cli \
   --vanilla "C:/Steam/steamapps/common/Hearts of Iron IV/localisation"
 ```
 
-`--dry-run` parses the files and reports broken lines, duplicate keys and unclosed `§` without translating or writing anything — no game and no internet needed.
+`--dry-run` parses the files and reports broken lines, duplicate keys and notes about `§` without translating or writing anything — no game and no internet needed. Lines marked `!` make the translator skip the file; `~` marks notes about the mod's own markup — those files still translate and the check exits with `0`.
+
+Only the translation can break a file. When the English source already has an unclosed colour (closed later by a `$VARIABLE$`) or a bare `§R`, the line is written exactly as it is with a warning, instead of losing a file that may hold thousands of good keys.
+
+Real files shape the parser: a value ends at the last quote on the line, so unescaped quotes inside the text do not break it; `§[expression]` is a dynamic colour and `§§` is a literal section sign. Verified on 110 files and 213 623 keys from Kaiserreich and Millennium Dawn.
 
 `KEY:0` and `KEY:7` are the same localisation key (the number is only a revision marker), so a file that repeats a key with different numbers is rejected instead of being written with overlapping entries.
 

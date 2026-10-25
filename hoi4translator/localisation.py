@@ -53,18 +53,81 @@ def source_text_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+# Two section-sign forms in real files are not "a broken colour code":
+#   * `§[...]` -- a dynamic colour taken from a game expression
+#     (`§[IRE_loc_sf_ideology]Sinn Féin§!`) -- matched as one unit so the
+#     expression is protected from the engine like any other placeholder;
+#   * `§§` -- a literal section sign (a US legal citation in a Millennium Dawn
+#     event), not a colour start at all.
 PLACEHOLDER_RE = re.compile(
-    r'(\$\$|\$[^$]+\$|\[[^\]]*\]|§[A-Za-z0-9!]|\\+.|\\{2,}|£\w+(?:\|\d+)?|@\w+\[!?\]?)'
+    r'(\$\$|\$[^$]+\$|\[[^\]]*\]|§\[[^\]]*\]|§§|§[A-Za-z0-9!]|\\+.|\\{2,}|£\w+(?:\|\d+)?|@\w+\[!?\]?)'
 )
 
 # HOI4 keys are ASCII identifiers; the version is optional and numeric only.
-# The value parser understands escaped quotes and keeps comments/suffixes intact.
+VALUE_PREFIX_RE = re.compile(r'^(\s*[A-Za-z0-9_.-]+:\d*\s*)')
+
+# Kept for callers that only ask "is this a key/value line?" and never look at
+# the groups; split_value_line() is the parser that survives real files.
 VALUE_RE = re.compile(
     r'^(\s*[A-Za-z0-9_.-]+:\d*\s*)"((?:[^"\\]|\\.)*)"(.*)$'
 )
+
+
 # HOI4 permits trailing whitespace and line comments, but not arbitrary tokens
 # after the closing quote.
 VALUE_SUFFIX_RE = re.compile(r'^[ \t]*(?:#.*)?$')
+
+
+def _is_escaped(text: str, index: int) -> bool:
+    """True if the character at `index` is preceded by an odd number of backslashes."""
+    backslashes = 0
+    index -= 1
+    while index >= 0 and text[index] == "\\":
+        backslashes += 1
+        index -= 1
+    return backslashes % 2 == 1
+
+
+def split_value_line(content: str):
+    """Split ``KEY:0 "value"`` into ``(prefix, value, suffix)``, else ``None``.
+
+    The value runs to the last quote that leaves only a comment or whitespace
+    behind it, which is how the game reads a localisation line. That matters
+    because real files are full of quotes that were never escaped:
+    ``traits_l_english.yml`` (a vanilla file, shipped by several mods) has
+    ``"§L"Shoot them again, they're not dead yet!"§!"``. Stopping at the first
+    quote -- what a plain regex does -- cuts that value in half, and rejecting
+    the line throws away the whole file. Scanning from the right and accepting
+    only a quote whose suffix is a comment also keeps ``# a "quoted" comment``
+    out of the value, and still reports a value that is never closed.
+    """
+    match = VALUE_PREFIX_RE.match(content)
+    if not match:
+        return None
+    start = match.end()
+    if content[start:start + 1] != '"':
+        return None
+    for position in range(len(content) - 1, start, -1):
+        if content[position] != '"' or _is_escaped(content, position):
+            continue
+        suffix = content[position + 1:]
+        if VALUE_SUFFIX_RE.fullmatch(suffix):
+            return match.group(1), content[start + 1:position], suffix
+    return None
+    start = match.end()
+    if content[start:start + 1] != '"':
+        return None
+    position = start + 1
+    length = len(content)
+    while position < length:
+        char = content[position]
+        if char == "\\":
+            position += 2
+            continue
+        if char == '"':
+            return match.group(1), content[start + 1:position], content[position + 1:]
+        position += 1
+    return None
 LANGUAGE_HEADER_RE = re.compile(r'^[ \t]*l_([A-Za-z0-9_]+):[ \t]*(?:#.*)?$', re.IGNORECASE)
 
 # Short translator code -> one of HOI4's built-in localization databases.

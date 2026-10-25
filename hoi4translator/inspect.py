@@ -11,11 +11,10 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
 from .localisation import (
-    VALUE_RE,
-    VALUE_SUFFIX_RE,
     load_existing_translations,
     normalize_key,
     read_localisation_lines,
+    split_value_line,
 )
 from .validation import PlaceholderValidator
 
@@ -36,8 +35,23 @@ class FileInspection:
     error: str = ""
 
     @property
+    def has_blocking_problems(self) -> bool:
+        """Problems that make the translator skip the file.
+
+        A malformed line or a duplicate key means the translator cannot write
+        the file; an unbalanced colour marker in the mod's own English does not
+        -- the translation keeps it and the line is written as it is.
+        """
+        return bool(self.error or self.malformed or self.duplicates)
+
+    @property
+    def has_notes(self) -> bool:
+        """Worth reading, but the file still translates."""
+        return bool(self.broken_markers)
+
+    @property
     def has_problems(self) -> bool:
-        return bool(self.error or self.malformed or self.duplicates or self.broken_markers)
+        return self.has_blocking_problems or self.has_notes
 
 
 def inspect_file(
@@ -66,17 +80,14 @@ def inspect_file(
         if stripped.casefold().startswith("l_") and stripped.endswith(":"):
             continue
 
-        match = VALUE_RE.fullmatch(content)
-        if not match:
+        parts = split_value_line(content)
+        if parts is None:
             if ":" in stripped:
                 inspection.malformed.append(number)
             continue
-        if not VALUE_SUFFIX_RE.fullmatch(match.group(3)):
-            inspection.malformed.append(number)
-            continue
 
-        key = normalize_key(match.group(1))
-        value = match.group(2)
+        key = normalize_key(parts[0])
+        value = parts[1]
         inspection.keys += 1
         inspection.values += 1
         seen.setdefault(key, []).append(number)
@@ -116,7 +127,7 @@ def format_report(inspections: Sequence[FileInspection], src_root: str) -> List[
             bad_files += 1
             lines.append(f"! {relative}: {inspection.error}")
             continue
-        if inspection.has_problems:
+        if inspection.has_blocking_problems:
             bad_files += 1
         parts = [f"{inspection.keys} ключей"]
         if inspection.translated:
@@ -130,8 +141,15 @@ def format_report(inspections: Sequence[FileInspection], src_root: str) -> List[
             more = "…" if len(inspection.duplicates) > 3 else ""
             parts.append(f"дубликаты ключей: {len(inspection.duplicates)} ({keys}{more})")
         if inspection.broken_markers:
-            parts.append(f"незакрытые §: {len(inspection.broken_markers)}")
-        prefix = "! " if inspection.has_problems else "  "
+            parts.append(
+                f"замечания по § в исходнике: {len(inspection.broken_markers)}"
+            )
+        if inspection.has_blocking_problems:
+            prefix = "! "
+        elif inspection.has_notes:
+            prefix = "~ "
+        else:
+            prefix = "  "
         lines.append(f"{prefix}{relative}: " + ", ".join(parts))
 
         for number, key, issues in inspection.broken_markers[:5]:
@@ -146,5 +164,11 @@ def format_report(inspections: Sequence[FileInspection], src_root: str) -> List[
         lines.append(
             "Файлы со строками, которые не парсятся, переводчик пропустит целиком — "
             "исправьте их до запуска."
+        )
+    notes = sum(len(item.broken_markers) for item in inspections)
+    if notes and not total_malformed:
+        lines.append(
+            "Замечания по § — это разметка самого мода (например, знак, закрытый через "
+            "$ПЕРЕМЕННУЮ$): такие строки записываются как есть, файл переводится."
         )
     return lines

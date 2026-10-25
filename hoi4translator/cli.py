@@ -190,7 +190,9 @@ def _dry_run(args, files: List[str], output_paths: Dict[str, str]) -> int:
     inspections = inspect_files(files, output_paths)
     for line in format_report(inspections, args.src):
         print(line, flush=True)
-    return 1 if any(inspection.has_problems for inspection in inspections) else 0
+    # Notes about the mod's own markup do not stop a file from being written.
+    blocking = any(i.has_blocking_problems for i in inspections)
+    return 1 if blocking else 0
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

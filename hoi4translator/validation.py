@@ -1,6 +1,6 @@
 """Validation of translated values and the per-run validation report."""
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from .localisation import PLACEHOLDER_RE
 from .text import zip_equal
@@ -17,13 +17,44 @@ class PlaceholderValidator:
         # Escapes are protected before translation, so they must match exactly.
         return PLACEHOLDER_RE.findall(text)
 
-    _COLOR_MARKER_RE = re.compile(r'§[A-Za-z0-9!]')
-    _INVALID_SECTION_RE = re.compile(r'§(?![A-Za-z0-9!])')
+    # A colour marker is either `§X`/`§!` or a dynamic `§[expression]`, both of
+    # which the game opens and closes the same way.
+    _COLOR_MARKER_RE = re.compile(r'§(?:\[[^\]]*\]|[A-Za-z0-9!])')
+    _COLOR_CODE_CHAR_RE = re.compile(r'[A-Za-z0-9!]')
+
+    @classmethod
+    def _invalid_sections(cls, text: str) -> List[int]:
+        """Positions of ``§`` that are neither a colour code nor a literal ``§§``.
+
+        Valid starts are ``§X`` (a colour letter), ``§!`` (close), ``§[...]``
+        (a dynamic colour from a game expression) and ``§§`` -- a doubled
+        section sign written by the mod author, as in ``15 U.S.C. §§ 1``, which
+        reads as plain text in game. Treating any of those as broken rejected
+        whole files: 18 lines in five files of Kaiserreich alone use ``§[...]``.
+        """
+        positions: List[int] = []
+        index, length = 0, len(text)
+        while index < length:
+            if text[index] != "§":
+                index += 1
+                continue
+            following = text[index + 1:index + 2]
+            if following == "[":
+                closing = text.find("]", index + 2)
+                if closing != -1:
+                    index = closing + 1
+                    continue
+            if following == "§" or (following and cls._COLOR_CODE_CHAR_RE.fullmatch(following)):
+                index += 2
+                continue
+            positions.append(index)
+            index += 1
+        return positions
 
     @classmethod
     def _color_format_issues(cls, text: str, label: str) -> List[str]:
         issues = []
-        if cls._INVALID_SECTION_RE.search(text):
+        if cls._invalid_sections(text):
             issues.append(f"{label}: некорректный знак §")
         active_color = False
         for marker in cls._COLOR_MARKER_RE.findall(text):
@@ -102,6 +133,36 @@ def validate_pairs(originals: List[str], translations: List[str]) -> List[List[s
         issues.extend(PlaceholderValidator.validate(original, translated))
         rows.append(issues)
     return rows
+
+
+def source_issues(original: str) -> List[str]:
+    """Problems the mod's own text already has, before any translation.
+
+    A lone ``§R`` used as a colour prefix, or a colour the author closed through
+    a ``$VARIABLE$``, are not translation errors: the engine copies the markup
+    exactly and the game reads it as before.
+    """
+    return PlaceholderValidator.validate(original, original)
+
+
+def split_row_issues(original: str, issues: List[str]) -> Tuple[List[str], List[str]]:
+    """Split a row's issues into those inherited from the source and those added.
+
+    Refusing a 4 700-key file because one English line is a bare ``§R`` throws
+    away every good line in it. Only a problem the translation introduced may
+    block or rewrite a line; the source's own problems are reported and left
+    exactly as the mod author wrote them.
+    """
+    known = set(source_issues(original))
+    inherited: List[str] = []
+    introduced: List[str] = []
+    for issue in issues:
+        # The same wording describes the source and the translation; a
+        # "перевод: ..." issue is inherited when the source says it about
+        # itself.
+        normalised = issue.replace("перевод:", "исходник:", 1)
+        (inherited if normalised in known else introduced).append(issue)
+    return inherited, introduced
 
 
 def validate_preview_translations(originals: List[str], translations: List[str]) -> List[str]:
