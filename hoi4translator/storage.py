@@ -7,16 +7,52 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
-from .config import CACHE_FORMAT_VERSION
+from .config import CACHE_FORMAT_VERSION, logger
 
 
 class TranslationCache:
     def __init__(self, db_path: str):
         self.db_path = db_path
-        # FIX: одно соединение на весь сеанс, check_same_thread=False для многопоточки
-        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        # One connection for the whole session, shared by the async engine's
+        # worker threads and by the GUI thread, so every statement goes through
+        # self._lock. `timeout` is what SQLite calls a busy timeout: a second
+        # instance of the app (or a WAL reader) holding the write lock makes a
+        # statement wait instead of failing with "database is locked".
+        self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30.0)
         self._lock = threading.Lock()
+        self._closed = False
+        self._apply_pragmas()
         self._init_db()
+
+    def _apply_pragmas(self) -> None:
+        """Durability and concurrency settings for the cache.
+
+        WAL keeps a committed entry readable while a writer is appending, and
+        leaves a journal SQLite can roll back after a crash in the middle of a
+        commit. It is still only a cache: a lost entry costs one API call, so
+        `synchronous=NORMAL` (the mode SQLite itself recommends for WAL) is
+        enough and saves an fsync per written translation.
+
+        The transaction mode is deliberately left at the default (deferred,
+        implicit BEGIN). `isolation_level=None` would autocommit every
+        statement, so `clear()` would delete rows without the surrounding
+        transaction and a failing `executemany` would leave half a file's
+        fingerprints behind.
+        """
+        try:
+            self._conn.execute("PRAGMA busy_timeout = 30000")
+            mode = self._conn.execute("PRAGMA journal_mode=WAL").fetchone()
+            # ":memory:" has no journal to switch and no file to share, so a
+            # differing mode is only interesting for a real database file.
+            if mode and str(mode[0]).casefold() != "wal" and self.db_path != ":memory:":
+                logger.warning(
+                    "Кэш работает без WAL (режим %s): файловая система не поддерживает",
+                    mode[0],
+                )
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.DatabaseError as error:
+            # A read-only or network copy of the database still has to open.
+            logger.warning("Не удалось включить WAL для кэша: %s", error)
 
     def _init_db(self):
         with self._lock:
@@ -151,7 +187,24 @@ class TranslationCache:
         return {'total': total, 'engines': engines, 'files': tracked_files}
 
     def close(self):
-        try:
-            self._conn.close()
-        except Exception:
-            pass
+        """Close the database; safe to call twice and from any thread.
+
+        `translator.__aexit__` runs on the event-loop thread while worker
+        threads may still be finishing a `get`/`set`, so the lock has to cover
+        the close as well -- otherwise the connection is torn down in the
+        middle of a statement.
+        """
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            try:
+                # Fold the WAL back into the main file so a portable copy of the
+                # cache is one file and no -wal grows next to it forever.
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass
+            try:
+                self._conn.close()
+            except Exception:
+                pass

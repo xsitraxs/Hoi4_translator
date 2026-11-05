@@ -66,8 +66,13 @@ PLACEHOLDER_RE = re.compile(
 # HOI4 keys are ASCII identifiers; the version is optional and numeric only.
 VALUE_PREFIX_RE = re.compile(r'^(\s*[A-Za-z0-9_.-]+:\d*\s*)')
 
-# Kept for callers that only ask "is this a key/value line?" and never look at
-# the groups; split_value_line() is the parser that survives real files.
+# Kept for backwards compatibility with the public surface and with callers
+# that only need a quick "does this look like KEY:0 "value"?" check. It is NOT
+# the parser: a greedy regex cannot express "the closing quote is the last one
+# whose suffix is a comment", so on a line that ends with an unescaped quote
+# (vanilla traits_l_english.yml) or with a quote inside the trailing comment it
+# disagrees with split_value_line(). Everything that has to read a value --
+# pipeline, inspect, vanilla, load_existing_translations -- uses the scanner.
 VALUE_RE = re.compile(
     r'^(\s*[A-Za-z0-9_.-]+:\d*\s*)"((?:[^"\\]|\\.)*)"(.*)$'
 )
@@ -114,20 +119,8 @@ def split_value_line(content: str):
         if VALUE_SUFFIX_RE.fullmatch(suffix):
             return match.group(1), content[start + 1:position], suffix
     return None
-    start = match.end()
-    if content[start:start + 1] != '"':
-        return None
-    position = start + 1
-    length = len(content)
-    while position < length:
-        char = content[position]
-        if char == "\\":
-            position += 2
-            continue
-        if char == '"':
-            return match.group(1), content[start + 1:position], content[position + 1:]
-        position += 1
-    return None
+
+
 LANGUAGE_HEADER_RE = re.compile(r'^[ \t]*l_([A-Za-z0-9_]+):[ \t]*(?:#.*)?$', re.IGNORECASE)
 
 # Short translator code -> one of HOI4's built-in localization databases.
@@ -270,13 +263,9 @@ def load_existing_translations(dst_path: str, log_cb=None) -> Dict[str, str]:
         lines, _encoding = read_localisation_lines(dst_path, log_cb)
         for line in lines:
             content, _ = _split_line_ending(line)
-            match = VALUE_RE.fullmatch(content)
-            if (
-                match
-                and VALUE_SUFFIX_RE.fullmatch(match.group(3))
-                and match.group(2).strip()
-            ):
-                existing[normalize_key(match.group(1))] = match.group(2)
+            parts = split_value_line(content)
+            if parts and parts[1].strip():
+                existing[normalize_key(parts[0])] = parts[1]
     except Exception as e:
         logger.error("Error reading existing translations (%s): %s", dst_path, e)
     return existing

@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import shutil
+import sqlite3
 import tempfile
 import threading
 import time
@@ -326,6 +327,89 @@ class TranslationCacheTests(unittest.TestCase):
                     self.assertIsNone(cache.get("Hello", "en", "ru", "Google"))
             finally:
                 cache.close()
+
+    def test_the_database_is_opened_in_wal_mode_with_a_busy_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "translations.sqlite3")
+            cache = translator_module.TranslationCache(path)
+            try:
+                # Read back through a second connection: the setting is stored
+                # in the database file, so this is what the next run inherits.
+                with sqlite3.connect(path) as probe:
+                    mode = probe.execute("PRAGMA journal_mode").fetchone()[0]
+                    # A writer from another process (a second copy of the app)
+                    # waits instead of raising "database is locked".
+                    busy_timeout = cache._conn.execute("PRAGMA busy_timeout").fetchone()[0]
+                    synchronous = cache._conn.execute("PRAGMA synchronous").fetchone()[0]
+                self.assertEqual(mode.casefold(), "wal")
+                self.assertEqual(busy_timeout, 30000)
+                self.assertEqual(synchronous, 1)  # NORMAL
+            finally:
+                cache.close()
+
+    def test_a_second_writer_waits_for_the_lock_instead_of_failing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "translations.sqlite3")
+            cache = translator_module.TranslationCache(path)
+            cache.set("Before", "До", "en", "ru", "Google")
+            blocker = sqlite3.connect(path, timeout=30.0, check_same_thread=False)
+            try:
+                # Another process holds the write lock for a moment.
+                blocker.execute("BEGIN IMMEDIATE")
+
+                errors = []
+
+                def write():
+                    try:
+                        cache.set("Hello", "Привет", "en", "ru", "Google")
+                    except Exception as error:  # noqa: BLE001 - reported below
+                        errors.append(error)
+
+                writer = threading.Thread(target=write)
+                writer.start()
+                time.sleep(0.3)
+                # Still alive means it is waiting on the lock, not failing on it.
+                self.assertTrue(writer.is_alive())
+                blocker.execute("COMMIT")
+                writer.join(timeout=10)
+
+                self.assertEqual(errors, [])
+                self.assertEqual(cache.get("Hello", "en", "ru", "Google"), "Привет")
+            finally:
+                blocker.close()
+                cache.close()
+
+    def test_close_is_idempotent_and_cannot_land_in_the_middle_of_a_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = translator_module.TranslationCache(
+                str(Path(directory) / "translations.sqlite3")
+            )
+            cache.set("Hello", "Привет", "en", "ru", "Google")
+            unexpected = []
+            closed = threading.Event()
+
+            def reader():
+                while not closed.is_set():
+                    try:
+                        cache.get("Hello", "en", "ru", "Google")
+                    except sqlite3.ProgrammingError:
+                        # The documented answer of a closed connection: the
+                        # reader sees "closed", never a half-torn-down handle.
+                        return
+                    except Exception as error:  # noqa: BLE001 - reported below
+                        unexpected.append(error)
+                        return
+
+            thread = threading.Thread(target=reader)
+            thread.start()
+            time.sleep(0.05)
+            cache.close()
+            cache.close()  # second close from anywhere must be a no-op
+            closed.set()
+            thread.join(timeout=5)
+
+            self.assertEqual(unexpected, [])
+            self.assertFalse(thread.is_alive())
 
 
 class LocalizationSyntaxTests(unittest.TestCase):

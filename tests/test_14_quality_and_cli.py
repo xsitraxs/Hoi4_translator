@@ -524,6 +524,22 @@ class InspectTests(unittest.TestCase):
         ])
         self.assertEqual(code, 1)
 
+    def test_dry_run_reads_the_glossary_file_once(self):
+        from hoi4translator.glossary import load_glossary as real_load_glossary
+
+        base = Path(self.directory.name)
+        write(base / "mod" / "a_l_english.yml", 'l_english:\n A:0 "one"\n')
+        terms = write(base / "terms.tsv", "Division\tДивизия\n")
+
+        with patch.object(cli, "load_glossary", side_effect=real_load_glossary) as spy:
+            code = cli.main([
+                "--src", str(base / "mod"), "--dst", str(base / "out"),
+                "--target", "ru", "--dry-run", "--glossary", terms,
+            ])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(spy.call_count, 1)
+
     def test_dry_run_writes_nothing(self):
         base = Path(self.directory.name)
         write(base / "mod" / "a_l_english.yml", 'l_english:\n A:0 "one"\n')
