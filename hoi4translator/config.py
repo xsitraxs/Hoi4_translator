@@ -12,6 +12,19 @@ __version__ = "1.4.3"
 # AsyncTranslator instead of mutating this global from a worker thread.
 SEMAPHORE_LIMIT = 15
 
+# The unofficial Google endpoint (translate.googleapis.com) has no API key and
+# no documented quota: 15 parallel lines at the default concurrency were enough
+# to collect 429s on a 4 700-key mod, and the retries then kept the endpoint
+# saturated. Requests are spread evenly at this rate instead (measured at ~5 rps,
+# which survives a full Kaiserreich-sized run); 0 disables pacing.
+GOOGLE_REQUESTS_PER_SECOND = 5.0
+
+# After this many consecutive 429s the endpoint is treated as refusing
+# everything: further requests fail fast for GOOGLE_RATE_LIMIT_COOLDOWN seconds,
+# so the fallback chain takes over instead of retrying into a wall.
+GOOGLE_RATE_LIMIT_BREAKER_THRESHOLD = 5
+GOOGLE_RATE_LIMIT_COOLDOWN = 60.0
+
 # Попытка импорта асинхронных библиотек для ускорения
 try:
     import aiohttp
@@ -101,19 +114,33 @@ try:
 except ImportError:
     keyring = None
 
+def _has_console() -> bool:
+    """False in a windowed build (pythonw / PyInstaller --noconsole).
+
+    There `sys.stderr` is None, so a StreamHandler has nothing to write to and
+    every log record ends in a logging error that goes nowhere. The file handler
+    stays, which is where a user reporting a bug actually looks.
+    """
+    stream = getattr(sys, "stderr", None)
+    return stream is not None and hasattr(stream, "write")
+
+
 def _build_log_handlers():
     """Rotating file handler (with a console mirror) that degrades gracefully."""
-    handlers = [logging.StreamHandler()]
+    handlers = []
     try:
-        handlers.insert(
-            0,
+        handlers.append(
             RotatingFileHandler(
                 LOG_FILE, maxBytes=1024 * 1024, backupCount=3, encoding="utf-8"
-            ),
+            )
         )
     except OSError:
         # A read-only or missing data directory must not prevent startup.
         pass
+    if _has_console():
+        handlers.append(logging.StreamHandler())
+    if not handlers:
+        handlers.append(logging.NullHandler())
     return handlers
 
 

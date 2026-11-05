@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import re
 import threading
 import time
@@ -11,6 +12,9 @@ from .config import (
     ASYNC_OK,
     DB_FILE,
     DEEPL_OK,
+    GOOGLE_RATE_LIMIT_BREAKER_THRESHOLD,
+    GOOGLE_RATE_LIMIT_COOLDOWN,
+    GOOGLE_REQUESTS_PER_SECOND,
     SEMAPHORE_LIMIT,
     GoogleTranslator,
     MyMemoryTranslator,
@@ -40,10 +44,110 @@ from .text import (
 from .validation import ValidationReport, validate_line, validate_preview_translations
 
 
+class _Pacer:
+    """Spread requests to one endpoint evenly instead of in bursts.
+
+    The free Google endpoint has no key and no documented quota. With
+    ``concurrency=15`` fifteen lines left together, were refused together and
+    were retried together, so a 4 700-key file produced waves of 429s no matter
+    how long each individual backoff was. Claiming a slot ahead of time is what
+    turns that into a flat rate; the caller only sleeps for what is left.
+    """
+
+    #: At `concurrency` 15 and 5 rps a queue is never more than ~3 s long, so
+    #: anything further ahead is a reservation the run abandoned (Stop pressed,
+    #: file rejected) -- the next run must not pay for it.
+    MAX_LOOKAHEAD = 5.0
+
+    def __init__(self, requests_per_second: float):
+        self.rate = max(0.0, float(requests_per_second))
+        self._interval = 1.0 / self.rate if self.rate else 0.0
+        self._next_slot = 0.0
+        self._lock = threading.Lock()
+
+    def reserve(self) -> float:
+        """Claim the next send slot; returns seconds the caller has to wait."""
+        if not self._interval:
+            return 0.0
+        with self._lock:
+            now = time.monotonic()
+            slot = max(now, self._next_slot)
+            if slot - now > self.MAX_LOOKAHEAD:
+                slot = now
+            self._next_slot = slot + self._interval
+            return slot - now
+
+    def reset(self) -> None:
+        with self._lock:
+            self._next_slot = 0.0
+
+
+class _RateLimitBreaker:
+    """Fail fast once an endpoint is clearly refusing every request.
+
+    Retries alone cannot recover from a hard 429 wave: every new line spends its
+    three attempts (and several seconds) learning what the previous line already
+    knew. After ``threshold`` consecutive 429s the breaker opens for
+    ``cooldown`` seconds, the engine call raises immediately, and the fallback
+    chain -- or the run report -- decides what to do instead.
+    """
+
+    def __init__(self, threshold: int = GOOGLE_RATE_LIMIT_BREAKER_THRESHOLD,
+                 cooldown: float = GOOGLE_RATE_LIMIT_COOLDOWN):
+        self._threshold = max(1, int(threshold))
+        self._cooldown = max(0.0, float(cooldown))
+        self._failures = 0
+        self._opened_at: Optional[float] = None
+        self._lock = threading.Lock()
+
+    def check(self) -> None:
+        """Raise when the breaker is open and the cooldown has not elapsed."""
+        with self._lock:
+            if self._opened_at is None:
+                return
+            elapsed = time.monotonic() - self._opened_at
+            if elapsed < self._cooldown:
+                remaining = self._cooldown - elapsed
+                break_open = True
+            else:
+                # Half-open: allow one probe, and re-open on its first 429.
+                self._opened_at = None
+                self._failures = max(0, self._threshold - 1)
+                break_open = False
+        if break_open:
+            raise RuntimeError(
+                "Google Translate: слишком много ответов 429 подряд, "
+                f"повтор через {remaining:.0f} c"
+            )
+
+    def record_rate_limit(self) -> None:
+        with self._lock:
+            self._failures += 1
+            if self._failures >= self._threshold and self._opened_at is None:
+                self._opened_at = time.monotonic()
+                logger.warning(
+                    "Google Translate: %s ответов 429 подряд, движок приостановлен на %.0f c",
+                    self._failures, self._cooldown,
+                )
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._failures = 0
+            self._opened_at = None
+
+
+#: One pacer and one breaker per process: a second translator object would
+#: otherwise double the request rate the endpoint sees.
+_GOOGLE_PACER = _Pacer(GOOGLE_REQUESTS_PER_SECOND)
+_GOOGLE_BREAKER = _RateLimitBreaker()
+
+
 class AsyncTranslator:
     #: Class-level default: some tests build the object without __init__ to
     #: exercise a single method, and a missing attribute must not crash them.
     glossary = None
+    _pacer = _GOOGLE_PACER
+    _breaker = _GOOGLE_BREAKER
 
     def __init__(self, engine: str, api_key: Optional[str] = None,
                  source_lang: str = "en", java_jar_path: Optional[str] = None,
@@ -68,6 +172,10 @@ class AsyncTranslator:
         # 👇 Передаём путь в сервис
         self.java_service = JavaTranslatorService(jar_path=java_jar_path)
         self._semaphore: Optional[asyncio.Semaphore] = None
+        # Pacing and the 429 breaker are process-wide on purpose: two runs, or
+        # two translators inside one run, must not multiply the request rate.
+        self._pacer = _GOOGLE_PACER
+        self._breaker = _GOOGLE_BREAKER
         self.validation_report = ValidationReport()
 
     async def __aenter__(self):
@@ -257,22 +365,39 @@ class AsyncTranslator:
                 'client': 'gtx', 'sl': self.source_lang, 'tl': google_target,
                 'dt': 't', 'q': chunk,
             }
+            delay = self._pacer.reserve()
+            if delay > 0:
+                await asyncio.sleep(delay)
             results.append(await self._google_request(url, params, retries, chunk))
         return "".join(results)
 
+    @staticmethod
+    def _jittered(base_wait: float) -> float:
+        """Half to one and a half times the base wait.
+
+        Without it every rejected line retried at the same instant as its
+        neighbours -- the burst the endpoint had just refused, sent again.
+        """
+        return base_wait * random.uniform(0.5, 1.5)
+
     async def _google_request(self, url: str, params: dict, retries: int, fallback: str) -> str:
         for attempt in range(retries):
+            # Outside the try: an open breaker must not look like a failed
+            # attempt and burn the remaining retries on it.
+            self._breaker.check()
             try:
                 async with self.session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     if resp.status == 200:
+                        self._breaker.record_success()
                         data = await resp.json(content_type=None)
                         return ''.join([s[0] for s in data[0] if s and s[0]])
                     elif resp.status == 429:
+                        self._breaker.record_rate_limit()
                         if attempt == retries - 1:
                             raise RuntimeError(
                                 "Google Translate rate-limited the request after all retries"
                             )
-                        wait = (2 ** attempt) * 2.0
+                        wait = self._jittered((2 ** attempt) * 2.0)
                         logger.warning(f"Rate limited (429). Ждём {wait:.1f}s...")
                         await asyncio.sleep(wait)
                     else:
@@ -281,11 +406,11 @@ class AsyncTranslator:
                 logger.warning(f"Google timeout, попытка {attempt+1}/{retries}")
                 if attempt == retries - 1:
                     raise
-                await asyncio.sleep(1.5 * (attempt + 1))
+                await asyncio.sleep(self._jittered(1.5 * (attempt + 1)))
             except Exception:
                 if attempt == retries - 1:
                     raise
-                await asyncio.sleep(1.0 * (attempt + 1))
+                await asyncio.sleep(self._jittered(1.0 * (attempt + 1)))
         return fallback
 
     @staticmethod
@@ -338,13 +463,27 @@ class AsyncTranslator:
                 target=provider_language_code("Google", target, target=True),
             )
 
+        # deep-translator's Google backend hits the same free endpoint as the
+        # async path, so it has to share both the pacing and the breaker.
+        paced = eng != "MyMemory"
         for attempt in range(retries):
+            if paced:
+                self._breaker.check()
+                delay = self._pacer.reserve()
+                if delay > 0:
+                    time.sleep(delay)
             try:
                 res = translator.translate(text)
-                return res if res else text
-            except Exception:
+                if res:
+                    if paced:
+                        self._breaker.record_success()
+                    return res
+                return text
+            except Exception as error:
+                if paced and "429" in str(error):
+                    self._breaker.record_rate_limit()
                 if attempt < retries - 1:
-                    time.sleep(1.0)
+                    time.sleep(self._jittered(1.0 * (attempt + 1)))
                 else:
                     raise
         return text
@@ -354,7 +493,16 @@ class AsyncTranslator:
                                file_ctx: str = "",
                                line_progress_cb=None,
                                stop_event: Optional[threading.Event] = None) -> List[str]:
-        """Переводит ограниченными пачками и отменяет незавершённые запросы по Stop."""
+        """Translate every line, keeping at most `concurrency` requests in flight.
+
+        The old shape cut the file into batches of exactly `concurrency` lines
+        and waited for a whole batch before starting the next one, while the
+        semaphore inside allowed `concurrency` requests -- so the barrier, not
+        the semaphore, decided the pace: one slow line held up fourteen finished
+        ones until it returned. Tasks are created once now and the semaphore in
+        `translate_text_async` is the only limit, which is what the setting
+        claims to mean.
+        """
         total = len(texts)
         if total == 0:
             return []
@@ -362,9 +510,6 @@ class AsyncTranslator:
         results: List[Optional[str]] = [None] * total
         done_count = 0
         progress_lock = asyncio.Lock()
-        # One batch in flight per unit of concurrency; the semaphore absorbs
-        # retries and fallback attempts inside a batch.
-        batch_size = max(1, self.concurrency)
 
         async def translate_one(i: int, text: str):
             nonlocal done_count
@@ -385,36 +530,40 @@ class AsyncTranslator:
                 async with progress_lock:
                     done_count += 1
                     line_progress_cb(done_count, total)
-            return i, result
+            results[i] = result
 
-        for first in range(0, total, batch_size):
-            if stop_event and stop_event.is_set():
-                raise TranslationCancelled("Перевод остановлен пользователем")
-
-            last = min(first + batch_size, total)
-            pending = {
-                asyncio.create_task(translate_one(i, texts[i]))
-                for i in range(first, last)
-            }
-            try:
-                while pending:
-                    if stop_event and stop_event.is_set():
-                        for task in pending:
-                            task.cancel()
-                        await asyncio.gather(*pending, return_exceptions=True)
-                        raise TranslationCancelled("Перевод остановлен пользователем")
-
-                    finished, pending = await asyncio.wait(
-                        pending, timeout=0.1, return_when=asyncio.FIRST_COMPLETED
-                    )
-                    for task in finished:
-                        index, translation = task.result()
-                        results[index] = translation
-            except BaseException:
-                for task in pending:
-                    task.cancel()
-                if pending:
-                    await asyncio.gather(*pending, return_exceptions=True)
-                raise
+        tasks = [asyncio.create_task(translate_one(i, texts[i])) for i in range(total)]
+        watcher = None
+        if stop_event is not None:
+            watcher = asyncio.create_task(self._cancel_when_stopped(stop_event, tasks))
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            if stop_event is not None and stop_event.is_set():
+                raise TranslationCancelled("Перевод остановлен пользователем") from None
+            raise
+        finally:
+            if watcher is not None:
+                watcher.cancel()
+                await asyncio.gather(watcher, return_exceptions=True)
 
         return [value if value is not None else texts[i] for i, value in enumerate(results)]
+
+    @staticmethod
+    async def _cancel_when_stopped(stop_event: threading.Event, tasks: List[asyncio.Task]) -> None:
+        """Cancel the batch when the UI's Stop button sets its event.
+
+        It has to be polled: `stop_event` is a `threading.Event` set from a Tk
+        callback, and a thread cannot wake an event loop. One watcher polling a
+        flag is cheaper than the per-batch `asyncio.wait(timeout=0.1)` it
+        replaces: that one woke the loop on every tick to ask whether anything
+        had finished, while this one only reads a boolean and is cancelled by
+        the caller as soon as the batch ends.
+        """
+        while not stop_event.is_set():
+            await asyncio.sleep(0.05)
+        for task in tasks:
+            task.cancel()

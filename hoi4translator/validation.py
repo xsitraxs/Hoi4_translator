@@ -22,6 +22,44 @@ class PlaceholderValidator:
     _COLOR_MARKER_RE = re.compile(r'§(?:\[[^\]]*\]|[A-Za-z0-9!])')
     _COLOR_CODE_CHAR_RE = re.compile(r'[A-Za-z0-9!]')
 
+    #: The colour codes the game actually knows, from the Localisation page of
+    #: the Paradox wiki: eleven named colours, gradient steps 0-9 and `t`
+    #: (step 10), plus `!` for "end". Anything else -- `§M`, `§Q` -- is not a
+    #: colour: the game logs "Could not find coloring for character 'M'" and
+    #: renders the marker as text. This is not a blocker (see below) because the
+    #: marker belongs to the mod author, not to the translation.
+    VALID_COLOR_CODES = frozenset("CLWBGRbgYHTO0123456789t!")
+
+    @classmethod
+    def _unknown_colour_codes(cls, text: str) -> List[str]:
+        """Colour codes used in `text` that are not in VALID_COLOR_CODES.
+
+        Text that starts with a section sign but is not a code at all (a space,
+        a multi-byte character, a bare sign at the end of the line) is left to
+        `_invalid_sections`, which already reports it as a broken sign.
+        """
+        found: List[str] = []
+        index, length = 0, len(text)
+        while index < length:
+            if text[index] != "§":
+                index += 1
+                continue
+            following = text[index + 1:index + 2]
+            if following == "[":
+                closing = text.find("]", index + 2)
+                index = closing + 1 if closing != -1 else index + 1
+                continue
+            if following == "§":
+                index += 2
+                continue
+            if following and cls._COLOR_CODE_CHAR_RE.fullmatch(following):
+                if following not in cls.VALID_COLOR_CODES and following not in found:
+                    found.append(following)
+                index += 2
+                continue
+            index += 1
+        return found
+
     @classmethod
     def _invalid_sections(cls, text: str) -> List[int]:
         """Positions of ``§`` that are neither a colour code nor a literal ``§§``.
@@ -56,6 +94,13 @@ class PlaceholderValidator:
         issues = []
         if cls._invalid_sections(text):
             issues.append(f"{label}: некорректный знак §")
+        unknown = cls._unknown_colour_codes(text)
+        if unknown:
+            # A note, not a blocker: the marker came from the mod author and the
+            # translator copies it byte for byte. Reported so a `§M` the game
+            # will print literally is visible before the file ships.
+            codes = ", ".join(f"§{code}" for code in unknown)
+            issues.append(f"{label}: неизвестный цветовой код {codes} — игра его не распознает")
         active_color = False
         for marker in cls._COLOR_MARKER_RE.findall(text):
             active_color = marker != "§!"

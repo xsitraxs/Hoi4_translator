@@ -227,11 +227,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _fail(str(error))
 
     if args.dry_run:
-        # A typo in the glossary path must not hide behind "nothing to check".
-        try:
-            load_glossary(args.glossary)
-        except GlossaryError as error:
-            return _fail(str(error))
+        # A typo in the glossary path is reported by the load above, so this
+        # second read of the same file (it used to be here) only doubled the I/O
+        # on the one path where the user asked for "no work, just check".
         return _dry_run(args, files, dict(pairs))
 
     vanilla = build_vanilla_index(

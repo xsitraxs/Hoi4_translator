@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -27,6 +28,9 @@ public class HoI4Translator {
     // Keep requests small enough for the unofficial Google endpoint, but never truncate text.
     private static final int MAX_QUERY_CHARS = 400;
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(20);
+    // Three attempts: the free endpoint either answers, refuses, or is down.
+    private static final int MAX_ATTEMPTS = 3;
+    private static final long BASE_BACKOFF_MILLIS = 1500L;
 
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(8))
@@ -159,39 +163,86 @@ public class HoI4Translator {
         String body = text.substring(bodyStart, bodyEnd);
         String suffix = text.substring(bodyEnd);
 
+        // The Python side paces the calls it makes itself, but this service is a
+        // separate process hitting the same keyless endpoint: a single 429 used
+        // to fail the whole batch, and the Python fallback then met the same wall.
+        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            try {
+                String query = URLEncoder.encode(body, StandardCharsets.UTF_8);
+                String encodedTarget = URLEncoder.encode(targetLang, StandardCharsets.UTF_8);
+                String encodedSource = (sourceLang == null || sourceLang.isBlank())
+                        ? "auto"
+                        : URLEncoder.encode(sourceLang, StandardCharsets.UTF_8);
+                String url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl="
+                        + encodedSource + "&tl=" + encodedTarget + "&dt=t&q=" + query;
+
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(java.net.URI.create(url))
+                        .timeout(REQUEST_TIMEOUT)
+                        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                        .header("Accept", "application/json")
+                        .GET()
+                        .build();
+
+                HttpResponse<String> response = httpClient.send(
+                        request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                int status = response.statusCode();
+                if (status != 200) {
+                    if ((status == 429 || status >= 500) && attempt < MAX_ATTEMPTS) {
+                        backoff(attempt);
+                        continue;
+                    }
+                    // Unchecked on purpose: a 404 or a 403 is not going to
+                    // change on the next attempt, and the IOException branch
+                    // below would retry it.
+                    throw new IllegalStateException(
+                            "Google Translate returned HTTP " + status);
+                }
+
+                String translated = parseGoogleResponse(response.body());
+                if (translated.isEmpty()) {
+                    if (attempt < MAX_ATTEMPTS) {
+                        backoff(attempt);
+                        continue;
+                    }
+                    throw new IOException("Google Translate returned an empty translation");
+                }
+                return prefix + translated + suffix;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Google Translate request was interrupted", e);
+            } catch (IllegalStateException e) {
+                // Already carries our own wording; do not wrap it twice.
+                throw e;
+            } catch (IOException e) {
+                if (attempt < MAX_ATTEMPTS) {
+                    backoff(attempt);
+                    continue;
+                }
+                throw new IllegalStateException("Google Translate request failed: " + e.getMessage(), e);
+            } catch (Exception e) {
+                throw new IllegalStateException("Google Translate request failed: " + e.getMessage(), e);
+            }
+        }
+        throw new IllegalStateException("Google Translate request failed after all attempts");
+    }
+
+    /**
+     * Wait before the next attempt, with jitter.
+     *
+     * Every parallel request that was refused used to come back after exactly
+     * the same delay, so the retry arrived as the same burst the endpoint had
+     * just rejected.
+     */
+    private void backoff(int attempt) {
+        long base = BASE_BACKOFF_MILLIS * (1L << Math.min(attempt - 1, 5));
+        double jitter = 0.5 + ThreadLocalRandom.current().nextDouble();
+        long wait = (long) (base * jitter);
         try {
-            String query = URLEncoder.encode(body, StandardCharsets.UTF_8);
-            String encodedTarget = URLEncoder.encode(targetLang, StandardCharsets.UTF_8);
-            String encodedSource = (sourceLang == null || sourceLang.isBlank())
-                    ? "auto"
-                    : URLEncoder.encode(sourceLang, StandardCharsets.UTF_8);
-            String url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl="
-                    + encodedSource + "&tl=" + encodedTarget + "&dt=t&q=" + query;
-
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(java.net.URI.create(url))
-                    .timeout(REQUEST_TIMEOUT)
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                    .header("Accept", "application/json")
-                    .GET()
-                    .build();
-
-            HttpResponse<String> response = httpClient.send(
-                    request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            if (response.statusCode() != 200) {
-                throw new IOException("Google Translate returned HTTP " + response.statusCode());
-            }
-
-            String translated = parseGoogleResponse(response.body());
-            if (translated.isEmpty()) {
-                throw new IOException("Google Translate returned an empty translation");
-            }
-            return prefix + translated + suffix;
+            Thread.sleep(wait);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new IllegalStateException("Google Translate request was interrupted", e);
-        } catch (Exception e) {
-            throw new IllegalStateException("Google Translate request failed: " + e.getMessage(), e);
+            throw new IllegalStateException("Google Translate backoff was interrupted", e);
         }
     }
 

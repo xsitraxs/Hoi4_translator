@@ -14,9 +14,18 @@ from pathlib import Path
 
 from hoi4translator import cli, pipeline as pipeline_module
 from hoi4translator.inspect import inspect_file
-from hoi4translator.localisation import split_value_line
+from hoi4translator.localisation import (
+    VALUE_RE,
+    VALUE_SUFFIX_RE,
+    load_existing_translations,
+    split_value_line,
+)
 from hoi4translator.text import PostProcessor, protect_placeholders, restore_placeholders
-from hoi4translator.validation import PlaceholderValidator, ValidationReport
+from hoi4translator.validation import (
+    PlaceholderValidator,
+    ValidationReport,
+    split_row_issues,
+)
 
 # vanilla traits_l_english.yml: quotes inside the value, never escaped
 TRAITS_LINE = ' loading_drill_master_desc: "§L"Shoot them again, they\'re not dead yet!"§!"'
@@ -106,6 +115,46 @@ class DynamicColourTests(unittest.TestCase):
         self.assertFalse(inspection.has_notes)
 
 
+class ColourCodeWhitelistTests(unittest.TestCase):
+    """Only the codes the game knows are colours; the rest are reported."""
+
+    VALID = "CLWBGRbgYHTO0123456789t!"
+
+    def test_every_documented_code_is_accepted(self):
+        for code in self.VALID:
+            value = f"§{code}text§!"
+            if code == "!":
+                value = "§Ytext§!"
+            self.assertEqual(PlaceholderValidator.validate(value, value), [], code)
+
+    def test_an_unknown_code_in_the_source_is_a_note_not_a_blocker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "m_l_english.yml"
+            path.write_text('l_english:\n A: "§Mfog of war§!"\n', encoding="utf-8-sig")
+            inspection = inspect_file(str(path))
+
+        self.assertTrue(inspection.has_notes)
+        self.assertFalse(inspection.has_blocking_problems)
+        # The note list carries the finding; the file is still translated.
+        self.assertEqual(len(inspection.broken_markers), 1)
+        self.assertIn(
+            "неизвестный цветовой код §M",
+            " ".join(inspection.broken_markers[0][2]),
+        )
+
+    def test_the_inspector_still_reports_a_unknown_code_as_a_note(self):
+        issues = PlaceholderValidator.validate("§Mfog§!", "§Mтуман§!")
+        self.assertTrue(any("неизвестный цветовой код §M" in issue for issue in issues))
+
+    def test_a_code_the_translation_invented_blocks_the_row(self):
+        inherited, introduced = split_row_issues("plain text", ["перевод: неизвестный цветовой код §M"])
+        self.assertEqual(inherited, [])
+        self.assertEqual(len(introduced), 1)
+
+    def test_a_valid_code_is_not_reported_as_unknown(self):
+        self.assertEqual(PlaceholderValidator.validate("§Ggreen§!", "§Gзелёный§!"), [])
+
+
 class _FakeTranslator:
     """Stands in for AsyncTranslator, including its protection of game tokens.
 
@@ -130,7 +179,8 @@ class _FakeTranslator:
         return results
 
 
-def run_processor(source, destination, translator, logs=None, target_lang="ru"):
+def run_processor(source, destination, translator, logs=None, target_lang="ru",
+                  skip_translated=False):
     """Write one file on a private event loop; returns (result, logs)."""
     logs = logs if logs is not None else []
     loop = asyncio.new_event_loop()
@@ -140,7 +190,7 @@ def run_processor(source, destination, translator, logs=None, target_lang="ru"):
         result = pipeline_module.process_file_sync(
             str(source), str(destination), translator,
             lambda *entry: logs.append(entry),
-            skip_translated=False, stop_event=threading.Event(), loop=loop,
+            skip_translated=skip_translated, stop_event=threading.Event(), loop=loop,
             target_lang=target_lang,
             broken_line_mode=pipeline_module.BrokenLineMode.REJECT_FILE,
             report=None,
@@ -240,6 +290,68 @@ class DryRunNotesTests(unittest.TestCase):
         mod = self._mod(' A: "unterminated')
         code = cli.main(["--src", mod, "--dst", tempfile.mkdtemp(), "--dry-run", "--quiet"])
         self.assertEqual(code, 1)
+
+
+class ReloadingWrittenTranslationsTests(unittest.TestCase):
+    """Whatever the writer produces, the reader has to read back.
+
+    ``skip_translated`` finds already translated rows by parsing the target
+    file. That reader used a first-quote regex, so a value holding a raw quote
+    (every one of the mods below) left a "suffix" the regex rejects and the row
+    was dropped: the file was paid for again on the next run and the glossary
+    was applied twice. Both sides now use ``split_value_line``.
+    """
+
+    def test_a_value_with_raw_quotes_is_read_back_in_full(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "traits_l_russian.yml"
+            original = '§L"Shoot them again, they\'re not dead yet!"§!'
+            lines = pipeline_module.build_output_lines(
+                ["l_russian:\n", ' loading_drill_master_desc: "old"\n'],
+                [1],
+                [original],
+                [(" loading_drill_master_desc: ", "", "\n")],
+            )
+            path.write_text("".join(lines), encoding="utf-8-sig")
+
+            existing = load_existing_translations(str(path))
+
+        self.assertEqual(existing, {"loading_drill_master_desc": original})
+
+    def test_the_old_value_regex_dropped_that_same_row(self):
+        # Guards the reason for the change: the regex stops at the first quote,
+        # so the "suffix" is the rest of the value and the row is rejected.
+        line = ' loading_drill_master_desc: "§L"Shoot them again!"§!"'
+        match = VALUE_RE.fullmatch(line)
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group(2), "§L")
+        self.assertIsNone(VALUE_SUFFIX_RE.fullmatch(match.group(3)))
+        self.assertIsNotNone(split_value_line(line))
+
+    def test_a_second_run_skips_the_rows_the_first_run_wrote(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "in" / "kw_l_english.yml"
+            destination = Path(directory) / "out" / "kw_l_russian.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "l_english:\n"
+                ' A:0 "First line"\n'
+                ' B:0 "Second line"\n',
+                encoding="utf-8-sig",
+            )
+
+            first = _FakeTranslator()
+            run_processor(source, destination, first)
+            self.assertEqual(sum(len(batch) for batch in first.batches), 2)
+
+            second = _FakeTranslator()
+            _, logs = run_processor(
+                source, destination, second, skip_translated=True
+            )
+
+        # Nothing was sent to an engine a second time.
+        self.assertEqual(second.batches, [])
+        self.assertTrue(any("Найдено переведённых строк" in str(entry) for entry in logs))
 
 
 if __name__ == "__main__":

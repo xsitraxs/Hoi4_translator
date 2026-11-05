@@ -1,7 +1,9 @@
 import asyncio
 import json
+import logging
 import os
 import shutil
+import sqlite3
 import tempfile
 import threading
 import time
@@ -326,6 +328,89 @@ class TranslationCacheTests(unittest.TestCase):
                     self.assertIsNone(cache.get("Hello", "en", "ru", "Google"))
             finally:
                 cache.close()
+
+    def test_the_database_is_opened_in_wal_mode_with_a_busy_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "translations.sqlite3")
+            cache = translator_module.TranslationCache(path)
+            try:
+                # Read back through a second connection: the setting is stored
+                # in the database file, so this is what the next run inherits.
+                with sqlite3.connect(path) as probe:
+                    mode = probe.execute("PRAGMA journal_mode").fetchone()[0]
+                    # A writer from another process (a second copy of the app)
+                    # waits instead of raising "database is locked".
+                    busy_timeout = cache._conn.execute("PRAGMA busy_timeout").fetchone()[0]
+                    synchronous = cache._conn.execute("PRAGMA synchronous").fetchone()[0]
+                self.assertEqual(mode.casefold(), "wal")
+                self.assertEqual(busy_timeout, 30000)
+                self.assertEqual(synchronous, 1)  # NORMAL
+            finally:
+                cache.close()
+
+    def test_a_second_writer_waits_for_the_lock_instead_of_failing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "translations.sqlite3")
+            cache = translator_module.TranslationCache(path)
+            cache.set("Before", "До", "en", "ru", "Google")
+            blocker = sqlite3.connect(path, timeout=30.0, check_same_thread=False)
+            try:
+                # Another process holds the write lock for a moment.
+                blocker.execute("BEGIN IMMEDIATE")
+
+                errors = []
+
+                def write():
+                    try:
+                        cache.set("Hello", "Привет", "en", "ru", "Google")
+                    except Exception as error:  # noqa: BLE001 - reported below
+                        errors.append(error)
+
+                writer = threading.Thread(target=write)
+                writer.start()
+                time.sleep(0.3)
+                # Still alive means it is waiting on the lock, not failing on it.
+                self.assertTrue(writer.is_alive())
+                blocker.execute("COMMIT")
+                writer.join(timeout=10)
+
+                self.assertEqual(errors, [])
+                self.assertEqual(cache.get("Hello", "en", "ru", "Google"), "Привет")
+            finally:
+                blocker.close()
+                cache.close()
+
+    def test_close_is_idempotent_and_cannot_land_in_the_middle_of_a_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = translator_module.TranslationCache(
+                str(Path(directory) / "translations.sqlite3")
+            )
+            cache.set("Hello", "Привет", "en", "ru", "Google")
+            unexpected = []
+            closed = threading.Event()
+
+            def reader():
+                while not closed.is_set():
+                    try:
+                        cache.get("Hello", "en", "ru", "Google")
+                    except sqlite3.ProgrammingError:
+                        # The documented answer of a closed connection: the
+                        # reader sees "closed", never a half-torn-down handle.
+                        return
+                    except Exception as error:  # noqa: BLE001 - reported below
+                        unexpected.append(error)
+                        return
+
+            thread = threading.Thread(target=reader)
+            thread.start()
+            time.sleep(0.05)
+            cache.close()
+            cache.close()  # second close from anywhere must be a no-op
+            closed.set()
+            thread.join(timeout=5)
+
+            self.assertEqual(unexpected, [])
+            self.assertFalse(thread.is_alive())
 
 
 class LocalizationSyntaxTests(unittest.TestCase):
@@ -819,6 +904,284 @@ class BrazilianPortugueseProviderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, "Olá")
         self.assertEqual(captured["tl"], "pt-BR")
+
+
+class _FakeGoogleResponse:
+    def __init__(self, status, payload=None):
+        self.status = status
+        self._payload = payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+    async def json(self, content_type=None):
+        return self._payload
+
+    def raise_for_status(self):
+        raise RuntimeError(f"HTTP {self.status}")
+
+
+class _FakeGoogleSession:
+    """Returns the queued responses in order and records each call."""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = 0
+
+    def get(self, *_args, **_kwargs):
+        self.calls += 1
+        return self.responses.pop(0)
+
+
+def _bare_translator(**attributes):
+    """An AsyncTranslator built without __init__, as the other tests do."""
+    translator = object.__new__(translator_module.AsyncTranslator)
+    translator.source_lang = "en"
+    for name, value in attributes.items():
+        setattr(translator, name, value)
+    return translator
+
+
+class RequestPacingTests(unittest.IsolatedAsyncioTestCase):
+    """The keyless Google endpoint needs a flat rate, not 15 requests at once."""
+
+    def test_the_pacer_spreads_slots_instead_of_bursting(self):
+        pacer = translation_module._Pacer(10.0)
+        first = pacer.reserve()
+        second = pacer.reserve()
+        third = pacer.reserve()
+
+        self.assertEqual(first, 0.0)
+        self.assertAlmostEqual(second, 0.1, places=1)
+        self.assertAlmostEqual(third, 0.2, places=1)
+
+    def test_pacing_can_be_switched_off(self):
+        pacer = translation_module._Pacer(0)
+        self.assertEqual([pacer.reserve() for _ in range(5)], [0.0] * 5)
+
+    def test_slots_reserved_by_a_cancelled_run_do_not_slow_down_the_next_one(self):
+        pacer = translation_module._Pacer(5.0)
+        for _ in range(100):  # ~20 s of slots a stopped run never used
+            pacer.reserve()
+
+        wait = pacer.reserve()
+
+        self.assertLessEqual(wait, translation_module._Pacer.MAX_LOOKAHEAD)
+
+    def test_the_pacer_lets_a_slot_that_is_already_due_go_immediately(self):
+        pacer = translation_module._Pacer(1000.0)
+        pacer.reserve()
+        time.sleep(0.05)  # far longer than the 1 ms interval
+        self.assertEqual(pacer.reserve(), 0.0)
+
+    async def test_google_requests_are_paced_before_they_are_sent(self):
+        reserved = []
+
+        class RecordingPacer:
+            def reserve(self):
+                reserved.append(True)
+                return 0.0
+
+        session = _FakeGoogleSession([_FakeGoogleResponse(200, [[("Olá",)]])])
+        translator = _bare_translator(session=session, _pacer=RecordingPacer(),
+                                      _breaker=translation_module._RateLimitBreaker())
+
+        with patch.object(translation_module, "aiohttp",
+                          types.SimpleNamespace(ClientTimeout=lambda **kwargs: kwargs), create=True):
+            result = await translator_module.AsyncTranslator._google_async(
+                translator, "Hello", "pt", retries=1
+            )
+
+        self.assertEqual(result, "Olá")
+        self.assertEqual(reserved, [True])
+
+    async def test_a_429_wait_is_jittered_not_rounded_to_a_fixed_delay(self):
+        waits = []
+
+        async def fake_sleep(delay):
+            waits.append(delay)
+
+        session = _FakeGoogleSession([
+            _FakeGoogleResponse(429),
+            _FakeGoogleResponse(429),
+            _FakeGoogleResponse(200, [[("Hello",)]]),
+        ])
+        translator = _bare_translator(session=session,
+                                      _breaker=translation_module._RateLimitBreaker())
+
+        with patch.object(translation_module, "aiohttp",
+                          types.SimpleNamespace(ClientTimeout=lambda **kwargs: kwargs), create=True), \
+                patch.object(translation_module.asyncio, "sleep", fake_sleep):
+            result = await translator_module.AsyncTranslator._google_request(
+                translator, "https://example.invalid", {}, 3, "fallback"
+            )
+
+        self.assertEqual(result, "Hello")
+        # Base waits are 2 s and 4 s; the jitter keeps them inside +-50 %.
+        self.assertEqual(len(waits), 2)
+        self.assertTrue(1.0 <= waits[0] <= 3.0, waits)
+        self.assertTrue(2.0 <= waits[1] <= 6.0, waits)
+
+
+class RateLimitBreakerTests(unittest.IsolatedAsyncioTestCase):
+    """After a wall of 429s the chain has to move on instead of retrying."""
+
+    def test_the_breaker_opens_after_the_threshold_and_closes_after_the_cooldown(self):
+        breaker = translation_module._RateLimitBreaker(threshold=3, cooldown=0.2)
+        breaker.check()  # closed: no complaint
+
+        for _ in range(3):
+            breaker.record_rate_limit()
+        with self.assertRaisesRegex(RuntimeError, "429"):
+            breaker.check()
+
+        time.sleep(0.25)
+        breaker.check()  # half-open probe allowed again
+
+    def test_a_success_clears_the_counter(self):
+        breaker = translation_module._RateLimitBreaker(threshold=2, cooldown=60)
+        breaker.record_rate_limit()
+        breaker.record_success()
+        breaker.record_rate_limit()
+        breaker.check()  # still closed: the success reset the streak
+
+    async def test_an_open_breaker_fails_fast_instead_of_burning_retries(self):
+        breaker = translation_module._RateLimitBreaker(threshold=1, cooldown=60)
+        breaker.record_rate_limit()
+        session = _FakeGoogleSession([_FakeGoogleResponse(200, [[("x",)]])])
+        translator = _bare_translator(session=session, _breaker=breaker)
+
+        with self.assertRaisesRegex(RuntimeError, "429"):
+            await translator_module.AsyncTranslator._google_request(
+                translator, "https://example.invalid", {}, 3, "fallback"
+            )
+        # The request was never sent, so no quota was spent on a known wall.
+        self.assertEqual(session.calls, 0)
+
+
+class BatchConcurrencyTests(unittest.IsolatedAsyncioTestCase):
+    """`concurrency` must bound requests in flight, not batch boundaries."""
+
+    async def test_a_slow_line_no_longer_holds_up_the_next_batch(self):
+        translator = _bare_translator(concurrency=2)
+        finished = []
+
+        async def fake_translate(text, target_lang="ru", **_kwargs):
+            await asyncio.sleep(0.25 if text == "slow" else 0.01)
+            finished.append(text)
+            return f"t:{text}"
+
+        translator.translate_text_async = fake_translate
+        result = await translator_module.AsyncTranslator.translate_batch(
+            translator, ["slow", "a", "b", "c"], "ru"
+        )
+
+        self.assertEqual(result, ["t:slow", "t:a", "t:b", "t:c"])
+        # With the old batching, "b" could not start before "slow" finished.
+        self.assertLess(finished.index("b"), finished.index("slow"))
+
+    async def test_the_semaphore_is_what_limits_requests_in_flight(self):
+        translator = _bare_translator(
+            concurrency=2,
+            engine="Stub",
+            reuse_fallback_cache=False,
+            fallback_notifier=None,
+            fallback_counts={},
+            glossary=None,
+            _semaphore=asyncio.Semaphore(2),
+            validation_report=translator_module.ValidationReport(),
+        )
+
+        class FakeCache:
+            def get(self, *_args):
+                return None
+
+            def set(self, *_args, **_kwargs):
+                return None
+
+        translator.cache = FakeCache()
+        in_flight = 0
+        peak = 0
+
+        async def fake_engine(self, engine, protected, target, retries):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.02)
+            in_flight -= 1
+            return protected.replace("Hello", "Привет")
+
+        translator._call_engine = types.MethodType(fake_engine, translator)
+        results = await translator_module.AsyncTranslator.translate_batch(
+            translator, [f"Hello {index}" for index in range(8)], "ru"
+        )
+
+        self.assertEqual(len(results), 8)
+        self.assertEqual(peak, 2)
+
+    async def test_stop_event_cancels_the_batch_without_waiting_for_the_slow_line(self):
+        translator = _bare_translator(concurrency=4)
+        stop = threading.Event()
+
+        async def fake_translate(text, target_lang="ru", **_kwargs):
+            await asyncio.sleep(5)
+            return text
+
+        translator.translate_text_async = fake_translate
+        started = time.monotonic()
+        threading.Timer(0.1, stop.set).start()
+        with self.assertRaises(translator_module.TranslationCancelled):
+            await translator_module.AsyncTranslator.translate_batch(
+                translator, ["a", "b", "c"], "ru", stop_event=stop
+            )
+        self.assertLess(time.monotonic() - started, 2.0)
+
+
+class ReportFileNameTests(unittest.TestCase):
+    def test_two_reports_written_in_the_same_second_do_not_overwrite_each_other(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first = report_module.RunReport("Google", "en", "ru", "src", "dst").write(directory)
+            second = report_module.RunReport("Google", "en", "ru", "src", "dst").write(directory)
+            names = {Path(path).name for path in first + second}
+
+        self.assertEqual(len(first), 2)
+        self.assertEqual(len(second), 2)
+        self.assertEqual(len(names), 4)
+
+
+class LogHandlerTests(unittest.TestCase):
+    """A windowed EXE has no stderr, so a console handler must not be installed."""
+
+    def test_a_windowed_build_installs_no_console_handler(self):
+        from hoi4translator import config as config_module
+
+        with patch.object(config_module.sys, "stderr", None):
+            handlers = config_module._build_log_handlers()
+
+        self.assertTrue(handlers)
+        self.assertFalse(
+            any(type(handler) is logging.StreamHandler for handler in handlers)
+        )
+
+    def test_a_console_build_keeps_the_mirror(self):
+        from hoi4translator import config as config_module
+
+        class FakeStream:
+            def write(self, _text):
+                return 0
+
+            def flush(self):
+                return None
+
+        with patch.object(config_module.sys, "stderr", FakeStream()):
+            handlers = config_module._build_log_handlers()
+
+        self.assertTrue(
+            any(type(handler) is logging.StreamHandler for handler in handlers)
+        )
 
 
 class MissingPlaceholderTests(unittest.IsolatedAsyncioTestCase):
