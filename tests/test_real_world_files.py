@@ -21,7 +21,11 @@ from hoi4translator.localisation import (
     split_value_line,
 )
 from hoi4translator.text import PostProcessor, protect_placeholders, restore_placeholders
-from hoi4translator.validation import PlaceholderValidator, ValidationReport
+from hoi4translator.validation import (
+    PlaceholderValidator,
+    ValidationReport,
+    split_row_issues,
+)
 
 # vanilla traits_l_english.yml: quotes inside the value, never escaped
 TRAITS_LINE = ' loading_drill_master_desc: "§L"Shoot them again, they\'re not dead yet!"§!"'
@@ -109,6 +113,46 @@ class DynamicColourTests(unittest.TestCase):
             inspection = inspect_file(str(path))
         self.assertFalse(inspection.has_blocking_problems)
         self.assertFalse(inspection.has_notes)
+
+
+class ColourCodeWhitelistTests(unittest.TestCase):
+    """Only the codes the game knows are colours; the rest are reported."""
+
+    VALID = "CLWBGRbgYHTO0123456789t!"
+
+    def test_every_documented_code_is_accepted(self):
+        for code in self.VALID:
+            value = f"§{code}text§!"
+            if code == "!":
+                value = "§Ytext§!"
+            self.assertEqual(PlaceholderValidator.validate(value, value), [], code)
+
+    def test_an_unknown_code_in_the_source_is_a_note_not_a_blocker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "m_l_english.yml"
+            path.write_text('l_english:\n A: "§Mfog of war§!"\n', encoding="utf-8-sig")
+            inspection = inspect_file(str(path))
+
+        self.assertTrue(inspection.has_notes)
+        self.assertFalse(inspection.has_blocking_problems)
+        # The note list carries the finding; the file is still translated.
+        self.assertEqual(len(inspection.broken_markers), 1)
+        self.assertIn(
+            "неизвестный цветовой код §M",
+            " ".join(inspection.broken_markers[0][2]),
+        )
+
+    def test_the_inspector_still_reports_a_unknown_code_as_a_note(self):
+        issues = PlaceholderValidator.validate("§Mfog§!", "§Mтуман§!")
+        self.assertTrue(any("неизвестный цветовой код §M" in issue for issue in issues))
+
+    def test_a_code_the_translation_invented_blocks_the_row(self):
+        inherited, introduced = split_row_issues("plain text", ["перевод: неизвестный цветовой код §M"])
+        self.assertEqual(inherited, [])
+        self.assertEqual(len(introduced), 1)
+
+    def test_a_valid_code_is_not_reported_as_unknown(self):
+        self.assertEqual(PlaceholderValidator.validate("§Ggreen§!", "§Gзелёный§!"), [])
 
 
 class _FakeTranslator:

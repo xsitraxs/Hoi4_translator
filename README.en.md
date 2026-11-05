@@ -115,7 +115,7 @@ Use the **same root level** for source and destination. If the source is a mod r
 
 ## ⚠️ Known limitations
 
-* The Google path uses the unofficial `translate.googleapis.com/translate_a/single` endpoint; its response format can change at any time (429 retries are implemented).
+* The Google path uses the unofficial `translate.googleapis.com/translate_a/single` endpoint; its response format can change at any time. The endpoint has no key, so requests are spread at `GOOGLE_REQUESTS_PER_SECOND` (5 by default) instead of bursting, retries are jittered, and a run of 429s stops the engine for a minute so the chain moves to the next one. The Java engine retries on its own (3 attempts, jittered).
 * MyMemory has hard daily limits — it is the last resort in the chain.
 * The preview window covers the first 1000 lines; the rest is saved as translated.
 * The GUI is currently Russian-only.

@@ -112,7 +112,10 @@ class RunReport:
     # --- запись ----------------------------------------------------------
 
     def _file_stamp(self) -> str:
-        return datetime.now().strftime("%Y%m%d-%H%M%S")
+        # Microseconds, because two runs started from the same button press
+        # (a retry after a failed engine) land in the same second and the
+        # second report silently overwrote the first.
+        return datetime.now().strftime("%Y%m%d-%H%M%S-%f")
 
     def _csv_text(self) -> str:
         buffer = io.StringIO()

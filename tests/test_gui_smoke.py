@@ -22,7 +22,24 @@ import customtkinter as ctk  # noqa: E402  (после установки заг
 from hoi4translator import settings as settings_module  # noqa: E402
 from hoi4translator.gui import theme  # noqa: E402
 from hoi4translator.gui.app import App  # noqa: E402
-from hoi4translator.gui.preview import PreviewWindow  # noqa: E402
+from hoi4translator.gui.preview import PreviewWindow, status_text  # noqa: E402
+
+
+class PreviewStatusTests(unittest.TestCase):
+    """A truncated preview must say that the rest of the file is unreviewed."""
+
+    def test_a_short_file_is_reported_as_a_plain_count(self):
+        self.assertEqual(status_text(12, 12), "12 строк")
+
+    def test_a_truncated_file_names_the_rows_that_are_not_shown(self):
+        text = status_text(4700, 1000)
+        self.assertIn("1000", text)
+        self.assertIn("4700", text)
+        self.assertIn("3700", text)
+        self.assertIn("без просмотра", text)
+
+    def test_an_empty_file_does_not_claim_anything_is_hidden(self):
+        self.assertEqual(status_text(0, 0), "0 строк")
 
 
 class PaletteTests(unittest.TestCase):

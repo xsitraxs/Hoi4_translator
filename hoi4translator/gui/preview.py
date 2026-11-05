@@ -11,6 +11,23 @@ from ..validation import validate_preview_translations
 from . import theme
 
 
+def status_text(total: int, shown: int) -> str:
+    """Header line for the preview; says out loud when rows are not shown.
+
+    The window used to state "показаны первые 1000 из 4700" in the same muted
+    grey as the file name, so a user who pressed "Save" reasonably believed they
+    had reviewed the file. The remaining rows are written unedited, and now the
+    header says so.
+    """
+    hidden = total - shown
+    if hidden <= 0:
+        return f"{total} строк"
+    return (
+        f"⚠ показаны первые {shown} из {total} строк — "
+        f"ещё {hidden} будут записаны без просмотра"
+    )
+
+
 class PreviewWindow(ctk.CTkToplevel):
     """
     Модальное окно предпросмотра перевода.
@@ -74,12 +91,11 @@ class PreviewWindow(ctk.CTkToplevel):
             font=theme.font(15, "bold"), text_color=theme.color('accent'),
         ).pack(side='left', padx=18, pady=12)
         shown = min(len(originals), self.MAX_PREVIEW_ROWS)
-        count_text = (
-            f"показаны первые {shown} из {len(originals)} строк"
-            if shown < len(originals) else f"{len(originals)} строк"
-        )
+        truncated = shown < len(originals)
         ctk.CTkLabel(
-            hdr, text=count_text, font=theme.font(12), text_color=theme.color('fg_muted')
+            hdr, text=status_text(len(originals), shown),
+            font=theme.font(12, "bold" if truncated else None),
+            text_color=theme.color('warning' if truncated else 'fg_muted'),
         ).pack(side='right', padx=18, pady=12)
 
         # Заголовки колонок
