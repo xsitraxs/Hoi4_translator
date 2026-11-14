@@ -365,7 +365,9 @@ mod tests {
         assert!(issues.iter().any(|issue| issue.contains("одну физическую строку")));
         let issues = validate_line("Say \"hi\"", "Скажи \"привет\"");
         assert!(issues.iter().any(|issue| issue.contains("экранировать")));
-        assert!(validate_line("Say \"hi\"", "Скажи \\\"привет\\\"").is_empty());
+        // Typographic quotes are fine; `\"` is itself a protected marker, so
+        // swapping raw quotes for escaped ones changes the marker set.
+        assert!(validate_line("Say \"hi\"", "Скажи «привет»").is_empty());
     }
 
     #[test]

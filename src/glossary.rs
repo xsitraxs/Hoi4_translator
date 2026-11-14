@@ -339,7 +339,10 @@ mod tests {
         let glossary = glossary(&[("Division", "дивизия")]);
         let mut tokens = Vec::new();
         let masked = glossary.apply("A Division, divisions and Division.", &mut tokens);
-        assert_eq!(masked, "A <<PH0>>, divisions and <<PH0>>.");
+        // Each occurrence gets its own token so a word can be restored in a
+        // different grammatical form later; `divisions` is untouched because
+        // the term ends mid-word.
+        assert_eq!(masked, "A <<PH0>>, divisions and <<PH1>>.");
         assert_eq!(tokens, vec!["дивизия".to_string(), "дивизия".to_string()]);
     }
 

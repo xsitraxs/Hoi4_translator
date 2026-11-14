@@ -730,8 +730,11 @@ mod tests {
 
     #[test]
     fn escaped_quotes_do_not_close_the_value() {
-        let parts = split_value_line(r#"KEY:0 "he said \"hi\""#).expect("line parses");
-        assert_eq!(parts.value, r#"he said \"hi\""#);
+        // A raw string cannot end with a bare quote before its `"#` terminator,
+        // so the escaped form is written out explicitly.
+        let parts = split_value_line("KEY:0 \"he said \\\"hi\\\"\"").expect("line parses");
+        assert_eq!(parts.value, "he said \\\"hi\\\"");
+        assert_eq!(parts.suffix, "");
     }
 
     #[test]
