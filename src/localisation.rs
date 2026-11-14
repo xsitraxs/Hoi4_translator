@@ -805,9 +805,9 @@ mod tests {
                 bytes
             }),
             // 0x98 has no cp1251 mapping, so this file can only be cp1252.
-            ("cp1252", b"KEY:0 \"Knig\"\n".to_vec()),
+            ("cp1252", b"KEY:0 \"K\x98nig\"\n".to_vec()),
             // 0x98 and 0x81 are undefined in cp1252 as well.
-            ("latin-1", b"KEY:0 \"Knig\"\n".to_vec()),
+            ("latin-1", b"KEY:0 \"K\x98\x81nig\"\n".to_vec()),
         ];
         for (expected, bytes) in cases {
             let (text, encoding) = decode_source(&bytes);
