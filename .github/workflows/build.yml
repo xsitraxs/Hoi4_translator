@@ -37,9 +37,37 @@ jobs:
       - name: Format
         # Non-blocking on purpose: the 2.0 port was written in an environment
         # without a Rust toolchain, so `cargo fmt --all` has not been run over
-        # it yet. Flip `continue-on-error` to false once it has.
+        # it yet. The next step prints the diff; once it is empty, drop
+        # `continue-on-error` here.
+        id: fmt
         continue-on-error: true
+        shell: bash
         run: cargo fmt --all --check
+
+      - name: Report formatting differences
+        if: steps.fmt.outcome == 'failure'
+        shell: bash
+        run: |
+          cargo fmt --all --check 2>&1 | head -400 > "${{ runner.temp }}/fmt.log" || true
+          python3 - "${{ runner.temp }}/fmt.log" <<'PY'
+          import pathlib, re, sys
+
+          log = pathlib.Path(sys.argv[1]).read_text(errors="replace")
+          hunks = re.split(r"^Diff in (\S+) at line (\d+):$", log, flags=re.M)
+          files = 0
+          for index in range(1, len(hunks) - 2, 3):
+              if files >= 8:
+                  break
+              path, line, body = hunks[index], hunks[index + 1], hunks[index + 2]
+              detail = "\n".join(body.strip().splitlines()[:24])
+              detail = detail.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")[:1200]
+              print(f"::error title=rustfmt {path.rsplit('/', 1)[-1]}:{line}::{detail}")
+              files += 1
+          if files == 0:
+              tail = "\n".join(log.strip().splitlines()[-6:])
+              tail = tail.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              print(f"::error title=rustfmt::{tail}")
+          PY
 
       - name: Lint
         run: cargo clippy --all-targets
