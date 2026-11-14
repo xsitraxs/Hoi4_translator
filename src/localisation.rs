@@ -215,14 +215,23 @@ fn decode_source(bytes: &[u8]) -> (String, &'static str) {
     if let Ok(text) = std::str::from_utf8(bytes) {
         return (text.to_string(), "utf-8");
     }
-    for (encoding, label) in [
-        (encoding_rs::WINDOWS_1251, "cp1251"),
-        (encoding_rs::WINDOWS_1252, "cp1252"),
+    // WHATWG maps the few "undefined" single-byte positions to C1 controls
+    // instead of reporting an error, so the tables that decide a candidate are
+    // the ones the Python codecs used: 0x98 has no cp1251 mapping, and
+    // 0x81/0x8D/0x8F/0x90/0x9D have no cp1252 mapping.
+    for (undefined, encoding, label) in [
+        (&[0x98u8][..], encoding_rs::WINDOWS_1251, "cp1251"),
+        (
+            &[0x81u8, 0x8D, 0x8F, 0x90, 0x9D][..],
+            encoding_rs::WINDOWS_1252,
+            "cp1252",
+        ),
     ] {
-        let (decoded, _actual, had_errors) = encoding.decode(bytes);
-        if !had_errors {
-            return (decoded.into_owned(), label);
+        if bytes.iter().any(|byte| undefined.contains(byte)) {
+            continue;
         }
+        let (decoded, _actual, _had_errors) = encoding.decode(bytes);
+        return (decoded.into_owned(), label);
     }
     // latin-1 maps every byte to a character, so it can never fail.
     (bytes.iter().map(|byte| *byte as char).collect(), "latin-1")
