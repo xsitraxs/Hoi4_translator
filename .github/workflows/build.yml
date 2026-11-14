@@ -147,9 +147,7 @@ jobs:
     name: Build Windows binary
     # Building on every pull request doubles the Windows minutes for little
     # value; manual dispatch covers the "will it still build?" question.
-    # TEMPORARY: pull requests included once, to verify the Rust port builds
-    # with MSVC; revert right after.
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     needs: test
     runs-on: windows-latest
     steps:
