@@ -1,0 +1,36 @@
+[package]
+name = "hoi4-translator"
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Batch translation of Hearts of Iron IV mod localisation (.yml) with Paradox markup kept intact"
+license = "MIT"
+repository = "https://github.com/xsitraxs/Hoi4_translator"
+readme = "README.md"
+keywords = ["hoi4", "localisation", "translation", "paradox"]
+categories = ["command-line-utilities"]
+
+[lib]
+name = "hoi4_translator"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hoi4-translator"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+encoding_rs = "0.8"
+log = "0.4"
+regex = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+ureq = "2.10"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
