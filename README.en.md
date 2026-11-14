@@ -169,9 +169,16 @@ Tests describe behaviour (format parser, markup validation, glossary, cache, fil
 codes), not implementation details, and never touch the network: any value they translate is either
 pinned by a glossary or pure markup.
 
-CI (`.github/workflows/build.yml`) runs `fmt --check`, `clippy`, `cargo test`, builds the Windows
-binary (tags and manual runs), smoke-tests it with `--help`, and publishes the release with
-`SHA256SUMS.txt`.
+CI (`.github/workflows/build.yml`) runs `clippy` and `cargo test` on every pull request
+(module unit tests plus `tests/cli_integration.rs`), then runs the real binary over the demo
+mod with `--dry-run`, which exercises the parser, the CLI and the exit codes without the
+network. `cargo fmt --check` is still a separate, non-blocking step: version 2.0 was written
+where no Rust toolchain was available, so `cargo fmt --all` has not been run over it yet —
+run it once locally and drop `continue-on-error` from the Format step.
+
+The Windows binary is built for tags and manual runs, smoke-tested with `--help`, and
+published with `SHA256SUMS.txt`. There is no `Cargo.lock` in the repository yet: the first
+local build creates it — commit it to pin the dependency versions.
 
 ## 🔁 Coming from Python 1.4
 
