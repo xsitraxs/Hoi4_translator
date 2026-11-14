@@ -73,7 +73,10 @@ fn the_dry_run_reports_the_bundled_demo_mod_and_writes_nothing() {
     cli.dry_run = true;
 
     assert_eq!(run(cli), 0, "a clean mod must pass the dry run");
-    assert!(!dst.exists(), "the dry run must not create the output folder");
+    assert!(
+        !dst.exists(),
+        "the dry run must not create the output folder"
+    );
     let _ = std::fs::remove_dir_all(&workspace);
 }
 
@@ -270,7 +273,10 @@ fn an_edited_source_line_is_translated_again() {
         BrokenLineMode::RejectFile,
         None,
     );
-    assert_eq!(second.stale, 1, "an edited source line must be re-translated");
+    assert_eq!(
+        second.stale, 1,
+        "an edited source line must be re-translated"
+    );
     assert_eq!(second.skipped, 0);
     let text = std::fs::read_to_string(&dst).expect("read");
     assert!(text.contains("army.1:0 \"дивизия!\""), "{text}");

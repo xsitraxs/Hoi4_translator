@@ -245,7 +245,9 @@ pub fn path_contains(parent: &Path, child: &Path) -> bool {
     if cfg!(windows) {
         let parent = path_key(parent);
         let child = path_key(child);
-        child == parent || child.starts_with(&format!("{parent}\\")) || child.starts_with(&format!("{parent}/"))
+        child == parent
+            || child.starts_with(&format!("{parent}\\"))
+            || child.starts_with(&format!("{parent}/"))
     } else {
         child.starts_with(parent)
     }

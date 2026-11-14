@@ -192,7 +192,10 @@ pub fn split_row_issues(original: &str, issues: &[String]) -> (Vec<String>, Vec<
     let mut introduced = Vec::new();
     for issue in issues {
         let normalised = issue.replacen("перевод:", "исходник:", 1);
-        if known.iter().any(|candidate| candidate.as_str() == normalised.as_str()) {
+        if known
+            .iter()
+            .any(|candidate| candidate.as_str() == normalised.as_str())
+        {
             inherited.push(issue.clone());
         } else {
             introduced.push(issue.clone());
@@ -210,11 +213,7 @@ pub fn validate_preview_translations(originals: &[String], translations: &[Strin
     let mut problems = Vec::new();
     for (row_number, issues) in rows.iter().enumerate() {
         if !issues.is_empty() {
-            problems.push(format!(
-                "Строка {}: {}",
-                row_number + 1,
-                issues.join(", ")
-            ));
+            problems.push(format!("Строка {}: {}", row_number + 1, issues.join(", ")));
         }
     }
     problems
@@ -343,8 +342,12 @@ mod tests {
     #[test]
     fn unclosed_colour_is_reported_for_each_side() {
         let issues = validate("§RNever closed", "§RNever closed");
-        assert!(issues.iter().any(|issue| issue.contains("исходник: цветовой маркер не закрыт")));
-        assert!(issues.iter().any(|issue| issue.contains("перевод: цветовой маркер не закрыт")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.contains("исходник: цветовой маркер не закрыт")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.contains("перевод: цветовой маркер не закрыт")));
     }
 
     #[test]
@@ -362,7 +365,9 @@ mod tests {
     #[test]
     fn physical_newlines_and_raw_quotes_are_rejected() {
         let issues = validate_line("Line", "Line one\nLine two");
-        assert!(issues.iter().any(|issue| issue.contains("одну физическую строку")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.contains("одну физическую строку")));
         let issues = validate_line("Say \"hi\"", "Скажи \"привет\"");
         assert!(issues.iter().any(|issue| issue.contains("экранировать")));
         // Typographic quotes are fine; `\"` is itself a protected marker, so
@@ -399,6 +404,9 @@ mod tests {
         assert_eq!(report.fixed, 1);
         assert_eq!(report.broken_count(), 1);
         assert_eq!(report.broken_for_file("a.yml").len(), 1);
-        assert_eq!(report.summary(), "Валидация: 1/3 OK | авто-фикс: 1 | битых: 1");
+        assert_eq!(
+            report.summary(),
+            "Валидация: 1/3 OK | авто-фикс: 1 | битых: 1"
+        );
     }
 }

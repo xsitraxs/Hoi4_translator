@@ -86,20 +86,23 @@ impl TranslationCache {
     }
 
     fn hash_key(text: &str, source_lang: &str, target_lang: &str, engine: &str) -> String {
-        let payload = serde_json::to_string(&(
-            CACHE_FORMAT_VERSION,
-            text,
-            source_lang,
-            target_lang,
-            engine,
-        ))
-        .unwrap_or_else(|_| format!("{CACHE_FORMAT_VERSION}{text}{source_lang}{target_lang}{engine}"));
+        let payload =
+            serde_json::to_string(&(CACHE_FORMAT_VERSION, text, source_lang, target_lang, engine))
+                .unwrap_or_else(|_| {
+                    format!("{CACHE_FORMAT_VERSION}{text}{source_lang}{target_lang}{engine}")
+                });
         let mut hasher = Sha256::new();
         hasher.update(payload.as_bytes());
         format!("{:x}", hasher.finalize())
     }
 
-    pub fn get(&self, text: &str, source_lang: &str, target_lang: &str, engine: &str) -> Option<String> {
+    pub fn get(
+        &self,
+        text: &str,
+        source_lang: &str,
+        target_lang: &str,
+        engine: &str,
+    ) -> Option<String> {
         let key = Self::hash_key(text, source_lang, target_lang, engine);
         let connection = self.connection();
         connection
@@ -246,9 +249,11 @@ impl TranslationCache {
             .map(|count| count.max(0) as usize)
             .unwrap_or(0);
         let files: usize = connection
-            .query_row("SELECT COUNT(DISTINCT dst_path) FROM file_sources", [], |row| {
-                row.get::<_, i64>(0)
-            })
+            .query_row(
+                "SELECT COUNT(DISTINCT dst_path) FROM file_sources",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
             .map(|count| count.max(0) as usize)
             .unwrap_or(0);
 
@@ -268,7 +273,13 @@ mod tests {
     fn values_round_trip() {
         let cache = TranslationCache::in_memory().expect("cache");
         assert!(cache.get("Rearm $STATE$", "en", "ru", "Google").is_none());
-        cache.set("Rearm $STATE$", "Перевооружите $STATE$", "en", "ru", "Google");
+        cache.set(
+            "Rearm $STATE$",
+            "Перевооружите $STATE$",
+            "en",
+            "ru",
+            "Google",
+        );
         assert_eq!(
             cache.get("Rearm $STATE$", "en", "ru", "Google").as_deref(),
             Some("Перевооружите $STATE$")

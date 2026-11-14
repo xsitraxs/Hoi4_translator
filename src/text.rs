@@ -90,7 +90,9 @@ impl PostProcessor {
         }
 
         // HOI4 newline escapes are literal two-character sequences in a value.
-        let text = space_around_newline_re().replace_all(text, "\\n").to_string();
+        let text = space_around_newline_re()
+            .replace_all(text, "\\n")
+            .to_string();
 
         // Choose a marker prefix that cannot collide with the text itself.
         let mut marker_prefix = "\u{E000}HOI4PP_".to_string();
@@ -140,7 +142,9 @@ impl PostProcessor {
 
         let marker_pattern = format!("{}([0-9]+){}", regex::escape(&marker_prefix), '\u{E001}');
         let Ok(marker_re) = Regex::new(&marker_pattern) else {
-            return leftover_placeholder_re().replace_all(&protected, "").to_string();
+            return leftover_placeholder_re()
+                .replace_all(&protected, "")
+                .to_string();
         };
         let restored = marker_re
             .replace_all(&protected, |captures: &Captures<'_>| {
@@ -229,7 +233,8 @@ fn is_marker_start(characters: &[char], index: usize) -> Option<usize> {
     if characters[index] != '<' || characters[index + 1] != '<' {
         return None;
     }
-    if !characters[index + 2].eq_ignore_ascii_case(&'p') || !characters[index + 3].eq_ignore_ascii_case(&'h')
+    if !characters[index + 2].eq_ignore_ascii_case(&'p')
+        || !characters[index + 3].eq_ignore_ascii_case(&'h')
     {
         return None;
     }
@@ -303,9 +308,7 @@ fn find_chunk_boundary(characters: &[char], start: usize, hard_end: usize) -> us
         index -= 1;
     }
 
-    let mut end = sentence_boundary
-        .or(word_boundary)
-        .unwrap_or(safe_end);
+    let mut end = sentence_boundary.or(word_boundary).unwrap_or(safe_end);
 
     // The chosen boundary must also stay outside every protection marker.
     for &(marker_start, marker_end) in &spans {
@@ -393,7 +396,10 @@ mod tests {
         let glossary = Glossary::from_pairs(vec![("Division", "дивизия")], "test");
         let (protected, tokens) = protect_placeholders("One Division, $STATE$", Some(&glossary));
         assert_eq!(protected, "One <<PH1>>, <<PH0>>");
-        assert_eq!(restore_placeholders(&protected, &tokens), "One дивизия, $STATE$");
+        assert_eq!(
+            restore_placeholders(&protected, &tokens),
+            "One дивизия, $STATE$"
+        );
     }
 
     #[test]
@@ -404,9 +410,18 @@ mod tests {
 
     #[test]
     fn post_processing_uses_target_quotes() {
-        assert_eq!(PostProcessor::process("call it \"war\"", "ru"), "call it «war»");
-        assert_eq!(PostProcessor::process("call it \"war\"", "de"), "call it „war“");
-        assert_eq!(PostProcessor::process("call it \"war\"", "en"), "call it “war”");
+        assert_eq!(
+            PostProcessor::process("call it \"war\"", "ru"),
+            "call it «war»"
+        );
+        assert_eq!(
+            PostProcessor::process("call it \"war\"", "de"),
+            "call it „war“"
+        );
+        assert_eq!(
+            PostProcessor::process("call it \"war\"", "en"),
+            "call it “war”"
+        );
     }
 
     #[test]
@@ -419,7 +434,10 @@ mod tests {
 
     #[test]
     fn leftover_markers_are_dropped() {
-        assert_eq!(PostProcessor::process("Hello <<PH0>> world", "en"), "Hello  world");
+        assert_eq!(
+            PostProcessor::process("Hello <<PH0>> world", "en"),
+            "Hello  world"
+        );
     }
 
     #[test]
@@ -427,7 +445,9 @@ mod tests {
         let text = format!("{}. {}", "word ".repeat(100), "Second sentence.");
         let chunks = split_long_text(&text, MAX_QUERY_CHARS);
         assert!(chunks.len() > 1);
-        assert!(chunks.iter().all(|chunk| chunk.chars().count() <= MAX_QUERY_CHARS));
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.chars().count() <= MAX_QUERY_CHARS));
         assert_eq!(chunks.concat(), text);
     }
 

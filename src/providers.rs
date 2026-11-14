@@ -70,9 +70,9 @@ pub fn provider_language_code(engine: &str, code: &str, target: bool) -> String 
     }
     let normalized = code.replace('_', "-").to_lowercase();
     if engine == "MyMemory" {
-        return mymemory_locale(&normalized).map(str::to_string).unwrap_or_else(|| {
-            format!("{code}-{}", code.to_uppercase())
-        });
+        return mymemory_locale(&normalized)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{code}-{}", code.to_uppercase()));
     }
     if engine == GOOGLE_ENDPOINT_ENGINE {
         // braz_por is a separate HOI4 database: ask for the Brazilian variant.

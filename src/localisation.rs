@@ -58,10 +58,7 @@ fn value_suffix_re() -> &'static Regex {
 
 fn language_header_re() -> &'static Regex {
     static CELL: OnceLock<Regex> = OnceLock::new();
-    regex_cell(
-        &CELL,
-        r"(?i)^[ \t]*l_([A-Za-z0-9_]+):[ \t]*(?:#.*)?$",
-    )
+    regex_cell(&CELL, r"(?i)^[ \t]*l_([A-Za-z0-9_]+):[ \t]*(?:#.*)?$")
 }
 
 fn key_version_re() -> &'static Regex {
@@ -244,8 +241,8 @@ pub fn read_localisation_lines(
     path: &Path,
     log: &mut dyn FnMut(&str, LogTag),
 ) -> Result<(Vec<String>, &'static str)> {
-    let bytes = fs::read(path)
-        .with_context(|| format!("не удалось прочитать {}", path.display()))?;
+    let bytes =
+        fs::read(path).with_context(|| format!("не удалось прочитать {}", path.display()))?;
     let (text, encoding) = decode_source(&bytes);
     if encoding != "utf-8-sig" {
         log(
@@ -549,7 +546,10 @@ pub fn rename_dst(
             .unwrap_or_else(|| PathBuf::from("unnamed.yml")),
     };
 
-    let parent = relative.parent().map(|path| path.to_path_buf()).unwrap_or_default();
+    let parent = relative
+        .parent()
+        .map(|path| path.to_path_buf())
+        .unwrap_or_default();
     let file_name = relative
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
@@ -622,7 +622,10 @@ fn walk_yml(directory: &Path, found: &mut Vec<PathBuf>) {
     let Ok(reader) = fs::read_dir(directory) else {
         return;
     };
-    let mut entries: Vec<PathBuf> = reader.filter_map(|entry| entry.ok()).map(|e| e.path()).collect();
+    let mut entries: Vec<PathBuf> = reader
+        .filter_map(|entry| entry.ok())
+        .map(|e| e.path())
+        .collect();
     entries.sort();
 
     let mut subdirectories = Vec::new();
@@ -645,10 +648,7 @@ pub fn validate_output_path_collisions(pairs: &[(PathBuf, PathBuf)]) -> Result<(
     let mut destinations: Vec<(String, Vec<&PathBuf>)> = Vec::new();
     for (source, destination) in pairs {
         let normalized = path_key(destination).to_lowercase();
-        match destinations
-            .iter_mut()
-            .find(|(key, _)| *key == normalized)
-        {
+        match destinations.iter_mut().find(|(key, _)| *key == normalized) {
             Some((_, sources)) => {
                 if !sources.iter().any(|existing| *existing == source) {
                     sources.push(source);
@@ -712,7 +712,10 @@ mod tests {
         assert_eq!(parts.prefix, " GER_x:0 ");
         // The line opens with a quote, then the value itself contains quoted
         // speaker text and a colour code: only the very last quote closes it.
-        assert_eq!(parts.value, "§L\"Shoot them again, they're not dead yet!\"§!");
+        assert_eq!(
+            parts.value,
+            "§L\"Shoot them again, they're not dead yet!\"§!"
+        );
         assert_eq!(parts.suffix, "");
     }
 
@@ -772,7 +775,9 @@ mod tests {
     fn a_file_in_another_source_language_is_refused() {
         let lines = vec!["l_german:\n".to_string(), "KEY:0 \"Wert\"\n".to_string()];
         let mut log = no_log();
-        assert!(prepare_target_localisation_lines(&lines, "russian", Some("en"), &mut log).is_none());
+        assert!(
+            prepare_target_localisation_lines(&lines, "russian", Some("en"), &mut log).is_none()
+        );
     }
 
     #[test]
@@ -819,7 +824,9 @@ mod tests {
 
     #[test]
     fn overlapping_roots_are_rejected() {
-        assert!(validate_directory_relationships(Path::new("/a/mod"), Path::new("/a/mod/out")).is_err());
+        assert!(
+            validate_directory_relationships(Path::new("/a/mod"), Path::new("/a/mod/out")).is_err()
+        );
         assert!(validate_directory_relationships(Path::new("/a/mod"), Path::new("/a/out")).is_ok());
     }
 

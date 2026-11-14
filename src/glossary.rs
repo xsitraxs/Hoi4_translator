@@ -137,10 +137,7 @@ impl Glossary {
     }
 
     fn parse(content: &str, path: &Path) -> Result<Vec<(String, String)>> {
-        let is_json = path
-            .to_string_lossy()
-            .to_lowercase()
-            .ends_with(".json");
+        let is_json = path.to_string_lossy().to_lowercase().ends_with(".json");
         if is_json {
             let value: serde_json::Value = serde_json::from_str(content)
                 .map_err(|error| anyhow!("Некорректный JSON в глоссарии: {error}"))?;
@@ -242,7 +239,8 @@ impl Glossary {
             if index + length > characters.len() {
                 continue;
             }
-            if (0..length).any(|offset| fold_char(characters[index + offset]) != term.folded[offset])
+            if (0..length)
+                .any(|offset| fold_char(characters[index + offset]) != term.folded[offset])
             {
                 continue;
             }
@@ -366,8 +364,11 @@ mod tests {
 
     #[test]
     fn tsv_glossaries_are_parsed_with_comments_and_quotes() {
-        let pairs = Glossary::parse("# comment\nDivision\tдивизия\n\"Tank; heavy\"\tтяжёлый танк\n", Path::new("g.tsv"))
-            .expect("parsed");
+        let pairs = Glossary::parse(
+            "# comment\nDivision\tдивизия\n\"Tank; heavy\"\tтяжёлый танк\n",
+            Path::new("g.tsv"),
+        )
+        .expect("parsed");
         assert_eq!(
             pairs,
             vec![

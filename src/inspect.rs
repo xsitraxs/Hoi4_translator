@@ -178,7 +178,11 @@ pub fn format_report(inspections: &[FileInspection], src_root: &Path) -> Vec<Str
                 .take(5)
                 .map(|row| row.to_string())
                 .collect();
-            let more = if inspection.malformed.len() > 5 { "…" } else { "" };
+            let more = if inspection.malformed.len() > 5 {
+                "…"
+            } else {
+                ""
+            };
             parts.push(format!(
                 "НЕ ПАРСИТСЯ строк: {} (строки {}{more})",
                 inspection.malformed.len(),
@@ -268,7 +272,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("hoi4-inspect-ok-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let file = dir.join("events_l_english.yml");
-        write(&file, "l_english:\n # comment\n A:0 \"One\"\n B:0 \"Two\"\n");
+        write(
+            &file,
+            "l_english:\n # comment\n A:0 \"One\"\n B:0 \"Two\"\n",
+        );
 
         let inspection = inspect_file(&file, None);
         assert_eq!(inspection.keys, 2);

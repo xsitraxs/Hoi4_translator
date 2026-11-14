@@ -130,8 +130,18 @@ impl RunReport {
     pub fn summary(&self) -> BTreeMap<&'static str, i64> {
         let mut summary: BTreeMap<&'static str, i64> = BTreeMap::new();
         for key in [
-            "files", "written", "rejected", "cancelled", "errors", "lines", "skipped", "stale",
-            "reused", "recovered", "broken", "fallbacks",
+            "files",
+            "written",
+            "rejected",
+            "cancelled",
+            "errors",
+            "lines",
+            "skipped",
+            "stale",
+            "reused",
+            "recovered",
+            "broken",
+            "fallbacks",
         ] {
             summary.insert(key, 0);
         }
@@ -164,9 +174,7 @@ impl RunReport {
         let rows = |records: &[RowRecord]| -> Vec<Value> {
             records
                 .iter()
-                .map(|row| {
-                    json!({"file": &row.file, "key": &row.key, "issues": &row.issues})
-                })
+                .map(|row| json!({"file": &row.file, "key": &row.key, "issues": &row.issues}))
                 .collect()
         };
 
@@ -235,8 +243,8 @@ impl RunReport {
         let json_path = directory.join(format!("hoi4_translator_report_{stamp}.json"));
         let csv_path = directory.join(format!("hoi4_translator_report_{stamp}.csv"));
 
-        let json_text = serde_json::to_string_pretty(&self.to_json())
-            .unwrap_or_else(|_| "{}".to_string());
+        let json_text =
+            serde_json::to_string_pretty(&self.to_json()).unwrap_or_else(|_| "{}".to_string());
         if let Err(error) = atomic_write_text(&json_path, &json_text) {
             log::warn!("Отчёт не записан: {error}");
             return written;
@@ -268,9 +276,42 @@ mod tests {
     #[test]
     fn the_summary_counts_every_status() {
         let mut report = RunReport::new("Google", "en", "ru", Path::new("/in"), Path::new("/out"));
-        report.record_file("a.yml", Path::new("/out/a.yml"), "written", 3, 1, 0, 0, 0, 2, "");
-        report.record_file("b.yml", Path::new("/out/b.yml"), "rejected", 0, 0, 0, 0, 1, 0, "bad");
-        report.record_file("c.yml", Path::new("/out/c.yml"), "error", 0, 0, 0, 0, 0, 0, "boom");
+        report.record_file(
+            "a.yml",
+            Path::new("/out/a.yml"),
+            "written",
+            3,
+            1,
+            0,
+            0,
+            0,
+            2,
+            "",
+        );
+        report.record_file(
+            "b.yml",
+            Path::new("/out/b.yml"),
+            "rejected",
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            "bad",
+        );
+        report.record_file(
+            "c.yml",
+            Path::new("/out/c.yml"),
+            "error",
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            "boom",
+        );
 
         let summary = report.summary();
         assert_eq!(summary["files"], 3);
@@ -296,7 +337,18 @@ mod tests {
     #[test]
     fn the_json_report_has_the_expected_shape() {
         let mut report = RunReport::new("Google", "en", "ru", Path::new("/in"), Path::new("/out"));
-        report.record_file("a.yml", Path::new("/out/a.yml"), "written", 1, 0, 0, 0, 0, 0, "");
+        report.record_file(
+            "a.yml",
+            Path::new("/out/a.yml"),
+            "written",
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            "",
+        );
         report.set_fallbacks(BTreeMap::from([("Google → MyMemory".to_string(), 2)]));
         let document = report.to_json();
         assert_eq!(document["version"], VERSION);

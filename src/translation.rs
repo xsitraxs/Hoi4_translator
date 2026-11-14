@@ -21,7 +21,9 @@ use crate::providers::{
 use crate::text::{
     protect_placeholders, restore_placeholders, split_long_text, PostProcessor, MAX_QUERY_CHARS,
 };
-use crate::validation::{validate_line, validate_preview_translations, BrokenRow, ValidationReport};
+use crate::validation::{
+    validate_line, validate_preview_translations, BrokenRow, ValidationReport,
+};
 
 const GOOGLE_ENDPOINT: &str = "https://translate.googleapis.com/translate_a/single";
 const MYMEMORY_ENDPOINT: &str = "https://api.mymemory.translated.net/get";
@@ -270,7 +272,11 @@ impl Translator {
     fn cache_engines(&self) -> Vec<String> {
         let mut engines = vec![self.engine.clone()];
         if self.reuse_fallback_cache {
-            engines.extend(fallback_chain(&self.engine).iter().map(|name| name.to_string()));
+            engines.extend(
+                fallback_chain(&self.engine)
+                    .iter()
+                    .map(|name| name.to_string()),
+            );
         }
         engines
     }
@@ -347,7 +353,8 @@ impl Translator {
         let mut last_error = String::new();
 
         for engine in &engines_to_try {
-            let raw_text = match self.call_engine(engine, &protected, target_lang, DEFAULT_RETRIES) {
+            let raw_text = match self.call_engine(engine, &protected, target_lang, DEFAULT_RETRIES)
+            {
                 Ok(value) => value,
                 Err(error) => {
                     attempts.push(format!("{engine}: {error}"));
@@ -485,8 +492,8 @@ impl Translator {
                     return parse_google_response(&body);
                 }
                 Err(ureq::Error::Status(429, _)) => {
-                    last_error = "Google Translate rate-limited the request after all retries"
-                        .to_string();
+                    last_error =
+                        "Google Translate rate-limited the request after all retries".to_string();
                     if attempt + 1 >= attempts {
                         return Err(last_error);
                     }
@@ -799,7 +806,10 @@ mod tests {
     #[test]
     fn google_responses_are_joined_from_their_segments() {
         let body = r#"[[["Перевооружите ","Rearm ",null,null,1],["$STATE$","$STATE$",null,null,1]],null,"en"]"#;
-        assert_eq!(parse_google_response(body).expect("parsed"), "Перевооружите $STATE$");
+        assert_eq!(
+            parse_google_response(body).expect("parsed"),
+            "Перевооружите $STATE$"
+        );
         assert!(parse_google_response("{}").is_err());
     }
 
@@ -813,10 +823,9 @@ mod tests {
 
     #[test]
     fn mymemory_errors_and_warnings_are_rejected() {
-        assert!(parse_mymemory_response(
-            r#"{"responseStatus":403,"responseDetails":"quota"}"#
-        )
-        .is_err());
+        assert!(
+            parse_mymemory_response(r#"{"responseStatus":403,"responseDetails":"quota"}"#).is_err()
+        );
         assert!(parse_mymemory_response(
             r#"{"responseStatus":200,"responseData":{"translatedText":"MYMEMORY WARNING: quota"}}"#
         )

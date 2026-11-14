@@ -26,7 +26,9 @@ pub mod vanilla;
 
 /// Version of the crate, also used by the release workflow.
 pub use config::VERSION as __version__;
-pub use localisation::{get_hoi4_language_name, normalize_key, HOI4_LANGUAGE_NAMES, HOI4_TARGET_LANGS};
+pub use localisation::{
+    get_hoi4_language_name, normalize_key, HOI4_LANGUAGE_NAMES, HOI4_TARGET_LANGS,
+};
 pub use translation::{TranslationError, Translator};
 
 use std::sync::atomic::AtomicBool;

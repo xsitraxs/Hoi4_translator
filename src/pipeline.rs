@@ -31,7 +31,10 @@ pub enum BrokenLineMode {
 
 pub const BROKEN_LINE_MODES: [(BrokenLineMode, &str); 2] = [
     (BrokenLineMode::RejectFile, "Не записывать файл"),
-    (BrokenLineMode::KeepOriginal, "Заменить битую строку оригиналом"),
+    (
+        BrokenLineMode::KeepOriginal,
+        "Заменить битую строку оригиналом",
+    ),
 ];
 
 pub fn broken_line_mode_from_label(label: &str) -> BrokenLineMode {
@@ -96,7 +99,12 @@ pub fn file_translation_timeout(line_count: usize) -> f64 {
     120.0f64.max(60.0 + 0.35 * line_count as f64)
 }
 
-fn finish(outcome: &mut FileOutcome, status: &'static str, message: &str, result: FileResult) -> FileResult {
+fn finish(
+    outcome: &mut FileOutcome,
+    status: &'static str,
+    message: &str,
+    result: FileResult,
+) -> FileResult {
     outcome.status = status;
     outcome.message = message.to_string();
     outcome.result = Some(result);
@@ -164,7 +172,12 @@ fn process_file_inner(
         Ok(name) => name,
         Err(error) => {
             log(&format!("  {error}"), LogTag::Error);
-            return finish(outcome, "rejected", "неверный целевой язык", FileResult::Rejected);
+            return finish(
+                outcome,
+                "rejected",
+                "неверный целевой язык",
+                FileResult::Rejected,
+            );
         }
     };
 
@@ -173,7 +186,10 @@ fn process_file_inner(
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_default();
-    if !dst_name.to_lowercase().ends_with(&required_suffix.to_lowercase()) {
+    if !dst_name
+        .to_lowercase()
+        .ends_with(&required_suffix.to_lowercase())
+    {
         log(
             &format!("  Файл пропущен: имя результата должно заканчиваться на {required_suffix}"),
             LogTag::Error,
@@ -207,8 +223,16 @@ fn process_file_inner(
     let source_lines = match read_localisation_lines(src_path, &mut *log) {
         Ok((lines, _encoding)) => lines,
         Err(error) => {
-            log(&format!("  Ошибка чтения исходника: {error}"), LogTag::Error);
-            return finish(outcome, "error", "не удалось прочитать исходник", FileResult::Error);
+            log(
+                &format!("  Ошибка чтения исходника: {error}"),
+                LogTag::Error,
+            );
+            return finish(
+                outcome,
+                "error",
+                "не удалось прочитать исходник",
+                FileResult::Error,
+            );
         }
     };
 
@@ -295,7 +319,9 @@ fn process_file_inner(
                     .get(&key)
                     .or_else(|| recorded_hashes.get(&raw_key));
                 let source_changed = known_hash
-                    .map(|hash| hash.as_str() != RECOVERED_HASH_MARKER && *hash != file_key_hashes[&key])
+                    .map(|hash| {
+                        hash.as_str() != RECOVERED_HASH_MARKER && *hash != file_key_hashes[&key]
+                    })
                     .unwrap_or(false);
 
                 if known_hash
@@ -391,7 +417,11 @@ fn process_file_inner(
     }
 
     if !malformed_lines.is_empty() {
-        let rows: Vec<String> = malformed_lines.iter().take(10).map(|row| row.to_string()).collect();
+        let rows: Vec<String> = malformed_lines
+            .iter()
+            .take(10)
+            .map(|row| row.to_string())
+            .collect();
         let remaining = malformed_lines.len().saturating_sub(10);
         let more = if remaining > 0 {
             format!(" и ещё {remaining}")
@@ -451,7 +481,10 @@ fn process_file_inner(
     if total == 0 {
         if structure_changed {
             if let Err(error) = atomic_write_localisation(dst_path, &out_lines) {
-                log(&format!("  Не удалось записать файл: {error}"), LogTag::Error);
+                log(
+                    &format!("  Не удалось записать файл: {error}"),
+                    LogTag::Error,
+                );
                 return finish(outcome, "error", "ошибка записи", FileResult::Error);
             }
         }
@@ -571,7 +604,11 @@ fn process_file_inner(
         .map(|(index, _)| index + 1)
         .collect();
     if !multiline_rows.is_empty() {
-        let rows: Vec<String> = multiline_rows.iter().take(10).map(|row| row.to_string()).collect();
+        let rows: Vec<String> = multiline_rows
+            .iter()
+            .take(10)
+            .map(|row| row.to_string())
+            .collect();
         log(
             &format!(
                 "  Файл не записан: перевод вернул физические переносы строк в значениях \
@@ -663,7 +700,9 @@ fn process_file_inner(
                 LogTag::Warning,
             );
             outcome.recovered += 1;
-            outcome.broken_rows.push((key.clone(), issues.clone(), true));
+            outcome
+                .broken_rows
+                .push((key.clone(), issues.clone(), true));
             approved_values[*index] = to_translate_val[*index].clone();
             // The English text is now in the target file; without the marker the
             // next run would treat it as a finished translation and keep it.
@@ -706,7 +745,10 @@ fn process_file_inner(
     }
 
     if let Err(error) = atomic_write_localisation(dst_path, &output) {
-        log(&format!("  Не удалось записать файл: {error}"), LogTag::Error);
+        log(
+            &format!("  Не удалось записать файл: {error}"),
+            LogTag::Error,
+        );
         return finish(outcome, "error", "ошибка записи", FileResult::Error);
     }
     cache.set_source_hashes(dst_path, &file_key_hashes);

@@ -157,7 +157,10 @@ impl VanillaIndex {
         let mut target_by_name: HashMap<String, PathBuf> = HashMap::new();
         for path in &target_files {
             if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
-                target_by_name.insert(name.replace(&target_suffix, "").to_lowercase(), path.clone());
+                target_by_name.insert(
+                    name.replace(&target_suffix, "").to_lowercase(),
+                    path.clone(),
+                );
             }
         }
 
@@ -271,11 +274,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("hoi4-vanilla-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         write(
-            &dir.join("localisation").join("english").join("units_l_english.yml"),
+            &dir.join("localisation")
+                .join("english")
+                .join("units_l_english.yml"),
             "l_english:\n infantry_equipment:0 \"Infantry Equipment\"\n tiny:0 \"ab\"\n",
         );
         write(
-            &dir.join("localisation").join("russian").join("units_l_russian.yml"),
+            &dir.join("localisation")
+                .join("russian")
+                .join("units_l_russian.yml"),
             "l_russian:\n infantry_equipment:0 \"Пехотное снаряжение\"\n tiny:0 \"аб\"\n",
         );
 
