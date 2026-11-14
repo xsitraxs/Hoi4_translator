@@ -1,4 +1,0 @@
-"""Tkinter user interface."""
-
-
-

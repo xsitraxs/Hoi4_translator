@@ -3,133 +3,200 @@
 [![Latest release](https://img.shields.io/github/v/release/xsitraxs/Hoi4_translator?label=release)](https://github.com/xsitraxs/Hoi4_translator/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/xsitraxs/Hoi4_translator/total)](https://github.com/xsitraxs/Hoi4_translator/releases)
 [![Tests](https://github.com/xsitraxs/Hoi4_translator/actions/workflows/build.yml/badge.svg)](https://github.com/xsitraxs/Hoi4_translator/actions/workflows/build.yml)
-[![License](https://img.shields.io/github/license/xsitraxs/Hoi4_translator)](LICENSE)
+[![License](https://github.com/xsitraxs/Hoi4_translator/blob/main/LICENSE)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.75%2B-orange)](https://www.rust-lang.org)
 
-**Batch-translate Hearts of Iron IV mod localization, without breaking Paradox formatting.**
+**Translate Hearts of Iron IV mods in batches, not by hand.** The tool walks a mod's `.yml`
+localisation files, translates only the values (keys stay untouched) and never breaks Paradox
+markup: `$VALUE$`, `§R…§!`, `£money`, `[GetTag]`, `\n`. Every file is validated before it is
+written, so a broken translation never reaches the game.
 
-Point the tool at a mod's `localisation` folder, pick a target language and an engine: it translates the values, keeps the keys untouched, and refuses to write a file it cannot verify. `$VALUE$`, `§R…§!`, `£money`, `[GetTag]`, `\n` and `"` escapes survive the round trip.
+**Read this in:** [Русский](README.md)
 
-**Читать по-русски:** [README.md](README.md) — the Russian README is the full one (every option, cache behaviour, reports, troubleshooting).
+> **Version 2.0 is a Rust rewrite.** The core, the engines and the CLI were ported 1:1 from
+> Python (file format, validation, cache, reports). Java is gone: the Google engine is built in.
+> The desktop window is the next step — see [Roadmap](#-roadmap); today the tool runs as
+> `hoi4-translator` in a terminal.
 
 ---
 
-## ⬇️ Download
+### ⬇️ Download / build
 
-| What | Who |
+| What | For whom |
 | --- | --- |
-| **[Hoi4_Translator.exe](https://github.com/xsitraxs/Hoi4_translator/releases/latest)** | Windows, no Python required — just run it |
-| `hoi4_translator.jar` | JavaSim engine, put it next to the EXE (needs Java 11+) |
-| From source | Python 3.9+, `pip install -r requirements.txt`, then `python hoi4_translator.py` |
+| `hoi4-translator.exe` | Windows, nothing to install — just run it (built by CI) |
+| From source | Rust 1.75+, `cargo build --release`, binary in `target/release/hoi4-translator` |
 
-![HoI4 Translator main window](docs/images/main-window-dark.png)
+```bash
+git clone https://github.com/xsitraxs/Hoi4_translator.git
+cd Hoi4_translator
+cargo build --release
+./target/release/hoi4-translator --help
+```
 
 ### What the output looks like
 
-Keys are never touched and markers survive — only the text changes:
+Keys are untouched and markup stays in place — only the text changes:
 
 ```yml
 # before (en)
 l_english:
  GER_rearm_the_rhine:0 "Rearm $STATE$ with £army_experience|1 and [GetPlayerTag] backing."
- USA_war_goal_ussr:0 "§YDeclare war§! on $TARGET$ and gain §G+10%§! war support."
+ GER_day_of_infamy:0 "Our diplomats call it \"an incident\".\nThe press calls it war."
 
 # after (ru)
 l_russian:
  GER_rearm_the_rhine:0 "Перевооружите $STATE$ с помощью £army_experience|1 и поддержки [GetPlayerTag]."
- USA_war_goal_ussr:0 "§YОбъявите войну§! государству $TARGET$ и получите §G+10%§! поддержки войны."
+ GER_day_of_infamy:0 "Наши дипломаты называют это \"инцидентом\".\nПресса называет это войной."
 ```
 
-If an engine mangles a single marker, the line is reported, and by default the whole file is not written at all.
+If an engine damages a single marker, the line is reported and — by default — the file is not
+written at all.
 
 ## 🔒 Is the EXE safe to run?
 
-Antivirus and SmartScreen warnings on PyInstaller builds are normal, but you should still verify:
-
-* **Where it came from.** The EXE is built by GitHub Actions from this repository; each release notes which CI run produced it.
-* **Checksum.** Releases ship a `SHA256SUMS.txt` with the hashes of the EXE and the JAR — check it locally:
-  ```powershell
-  certutil -hashfile Hoi4_Translator.exe SHA256
-  ```
-  or `sha256sum -c SHA256SUMS.txt` on Linux/macOS.
-* **SmartScreen.** The binary is not code-signed (that costs money), so Windows will warn you: "More info" → "Run anyway".
-* **VirusTotal.** If the release notes link a scan report, check the file there; running from source needs none of this.
-* **No trust in binaries at all.** MIT source is right here — run it with Python 3.9+ instead.
+* **Where it comes from.** The binary is built by GitHub Actions from open source; the CI run is
+  linked in the release notes.
+* **Checksum.** Every release ships `SHA256SUMS.txt`: `certutil -hashfile hoi4-translator.exe SHA256`
+  on Windows, `sha256sum -c SHA256SUMS.txt` elsewhere.
+* **SmartScreen.** The binary is not code-signed (that costs money), so Windows shows
+  "Windows protected your PC": *More info* → *Run anyway*.
+* **No trust at all.** The code is MIT: `cargo build --release` gives you the same program.
 
 ## ✨ What it does
 
-* **Engines:** DeepL (official client, API key stored in the OS credential store), Google Translate, MyMemory, and an optional Java engine (JavaSim).
-* **Fallback chain:** `DeepL → Google → MyMemory`. Every substitution is logged and counted in the summary, so a paid engine never degrades to a free one silently.
-* **Fallback on a broken answer:** a reply that cannot be written to the game (a lost `$STATE$`, a broken one-line format) counts as a failed attempt, not as a translation: that single line moves on to the next engine while the rest of the batch is untouched. Only a value that passed validation is cached, so a later run never reuses known-broken text. If no engine produced a usable value the line is not passed off as translated: the strict mode refuses the file, and "replace the broken line with the original" keeps the English text for that line and reports it.
-* **Placeholder protection:** variables, formatters, colour codes, gradients, icons and escape sequences are masked before translating and restored afterwards.
-* **Glossary:** a `term → translation` file (TSV/CSV/JSON). Terms are masked out before the request and written back already translated, so an engine cannot translate them differently or reorder them. See [`docs/glossary-example.tsv`](docs/glossary-example.tsv).
-* **Vanilla reuse:** point it at the installed game's `localisation` folder and any line the mod copied from the base game takes the official translation — those lines never reach an engine.
-* **Headless CLI:** `python hoi4_translator.py --cli --src ... --dst ... --target ru` for CI and servers without a display.
-* **Line-level validation:** if a translation loses a marker, the file is not written by default (`Do not write the file`) — alternatively the broken line can be replaced with the English original and reported.
-* **Cache:** SQLite. A key is `text + language pair + engine`, so switching engines does not serve stale results. "Skip already translated" also stores a checksum of the source line, so a mod author's edit invalidates the old translation.
-* **Preview:** the first 1000 lines of each file can be reviewed and edited before saving.
-* **Run report:** `hoi4_translator_report_<date>.json` and `.csv` next to the output folder — files, written/rejected/cancelled counts, fallbacks, broken and recovered lines.
-* **Output format:** UTF-8 **with BOM**, `l_<language>:` header, `_l_<language>.yml` suffix, relative folder structure preserved.
-* **GUI:** CustomTkinter, dark theme with an amber accent, live log, twin progress bars, cancel that actually cancels requests.
+* **Three engines with a fallback chain:** Google (unofficial HTTP endpoint, no API key), DeepL
+  (official API, key via `--api-key` or `DEEPL_API_KEY`), MyMemory. An outage *or an answer that
+  would break the file* sends **only that line** to the next engine:
+  `DeepL → Google → MyMemory`, `Google → MyMemory`, `MyMemory → Google`.
+* **Term glossary:** a `term → translation` file (TSV/CSV/JSON). Terms are replaced by markers
+  *before* the request and written back translated, so an engine cannot translate, reorder or
+  decline them. See [`docs/glossary-example.tsv`](docs/glossary-example.tsv).
+* **Vanilla reuse:** point it at the game's `localisation` folder and lines the mod copied from
+  the base game take the official translation instead of a second machine translation.
+* **Offline inspection:** `--dry-run` parses everything and reports malformed lines, duplicate keys
+  and `§` problems without a single network request.
+* **SQLite cache:** identical lines are never paid for twice; `--skip-translated` stores a
+  fingerprint of every source line, so edited English text is translated again.
+* **Run report:** JSON + CSV next to the output folder — what was written, rejected, repaired, and
+  how often the engine had to fall back.
+* **Atomic writes:** files are replaced whole (temp file + rename), so the game can never read half
+  a line.
+* **No Java, no Python:** a single self-contained binary with SQLite compiled in.
 
 ## 🛠 Requirements
 
-1. **Python 3.9+** (CI runs 3.9, 3.11 and 3.13) — only for the source install.
-2. **Java JDK 11+** — only for the optional JavaSim engine.
-3. `python -m pip install -r requirements.txt`
+1. **Rust 1.75+** to build from source. The released binary needs nothing.
+2. No Python, no Java, no installed game.
 
-### Running from source
-
-```bash
-git clone https://github.com/xsitraxs/Hoi4_translator.git
-cd Hoi4_translator
-python -m pip install -r requirements.txt
-python hoi4_translator.py        # --help / --version also work
-```
-
-## 🖥 Headless mode
+## 🖥 Usage
 
 ```bash
-python hoi4_translator.py --cli \
+hoi4-translator \
   --src "MOD/localisation/english" \
   --dst "OUT/localisation/russian" \
-  --target ru --engine Google \
-  --glossary docs/glossary-example.tsv \
-  --vanilla "C:/Steam/steamapps/common/Hearts of Iron IV/localisation"
+  --target ru --engine Google
 ```
 
-`--dry-run` parses the files and reports broken lines, duplicate keys and notes about `§` without translating or writing anything — no game and no internet needed. Lines marked `!` make the translator skip the file; `~` marks notes about the mod's own markup — those files still translate and the check exits with `0`.
+Check files without translating anything (no game, no internet):
 
-Only the translation can break a file. When the English source already has an unclosed colour (closed later by a `$VARIABLE$`) or a bare `§R`, the line is written exactly as it is with a warning, instead of losing a file that may hold thousands of good keys.
+```bash
+hoi4-translator --src examples/demo-mod --dst /tmp/out --target ru --dry-run
+```
 
-Real files shape the parser: a value ends at the last quote on the line, so unescaped quotes inside the text do not break it; `§[expression]` is a dynamic colour and `§§` is a literal section sign. Verified on 110 files and 213 623 keys from Kaiserreich and Millennium Dawn.
+| Flag | Meaning |
+| --- | --- |
+| `--engine Google\|DeepL\|MyMemory` | translation engine (Google by default) |
+| `--api-key KEY` / `DEEPL_API_KEY` | DeepL key; without it `--engine DeepL` exits with code 2 |
+| `--glossary FILE` | term glossary (TSV/CSV/JSON) |
+| `--vanilla DIR` | the game's `localisation` folder, to reuse official translations |
+| `--skip-translated` | do not translate lines already translated in the output folder |
+| `--broken-lines reject\|keep-original` | what to do with a line that breaks the format |
+| `--concurrency N` | parallel requests (15 by default) |
+| `--no-report` | skip the JSON/CSV report |
+| `--quiet` | final summary only |
+| `--dry-run` | parse and report only, nothing translated or written |
 
-`KEY:0` and `KEY:7` are the same localisation key (the number is only a revision marker), so a file that repeats a key with different numbers is rejected instead of being written with overlapping entries.
-
-DeepL needs a key (`--api-key` or `DEEPL_API_KEY`); without one the CLI exits with code `2` rather than silently falling back to a free engine.
-
-Useful flags: `--skip-translated`, `--broken-lines keep-original`, `--concurrency N`, `--no-report`, `--quiet`; `--cli --help` lists everything. Exit codes: `0` all files written, `1` at least one file failed, `2` bad arguments or folders (nothing started).
+Exit codes: `0` — everything written; `1` — at least one file was not written (or `--dry-run`
+found blocking problems); `2` — bad arguments or folders, nothing was started.
 
 ## 📁 Choosing folders
 
-Use the **same root level** for source and destination. If the source is a mod root, the output must be another mod root. If the source is the `localisation` folder, pick an output `localisation` root. The tool keeps the relative structure and swaps the language folder/suffix for the target language.
+Pick separate source and output folders: nesting is rejected, so a run can never read its own
+output. Keep the same root level as the source (mod root → mod root, `localisation` →
+`localisation`). The relative structure is preserved and the language folder and suffix are
+replaced with the target language.
+
+## 🧠 Cache and "skip already translated"
+
+* The cache is SQLite (`translation_cache.db`) in the application data directory. Entries are keyed
+  by text + language pair + engine.
+* **By default each engine reads only its own cache** — otherwise switching Google → DeepL would
+  keep serving the old Google text forever.
+* The cache carries a format version (`2`); Python 1.4.x entries are compatible, so updating does
+  not force a full re-translation.
+* `--skip-translated` also stores the fingerprint of each source line. Edited English text is
+  re-translated; files without fingerprints keep their translation with a warning that it cannot be
+  proven up to date.
+
+Data directory: `%LOCALAPPDATA%\Hoi4Translator` (Windows),
+`~/Library/Application Support/Hoi4Translator` (macOS),
+`$XDG_DATA_HOME/Hoi4Translator` or `~/.local/share/Hoi4Translator` (Linux). The log
+(`hoi4_translator.log`) lives there too; the text of translated lines is never logged.
 
 ## ⚠️ Known limitations
 
-* The Google path uses the unofficial `translate.googleapis.com/translate_a/single` endpoint; its response format can change at any time (429 retries are implemented).
-* MyMemory has hard daily limits — it is the last resort in the chain.
-* The preview window covers the first 1000 lines; the rest is saved as translated.
-* The GUI is currently Russian-only.
-* A glossary disables the translation cache: the cache is keyed by source text, and a different glossary would silently answer with a translation made under another term list.
+* **No desktop window yet:** 2.0 is a CLI; the GUI is the next milestone, and all translation logic
+  it needs is already a library.
+* Google is used through the unofficial `translate.googleapis.com` endpoint, whose format may
+  change at any time (429 retries are implemented).
+* MyMemory is the last fallback and has strict daily quotas.
+* Legacy flags: `--cli` is accepted and ignored, `--engine JavaSim` behaves like `Google` (with a
+  warning), `--java-jar` is ignored.
+* BOM-less `cp1252` files are decoded as `cp1251` — same behaviour as the Python build; re-save the
+  file as UTF-8 if it matters.
 
 ## 👩‍💻 Development
 
 ```bash
-python -m pip install -r requirements.txt ruff coverage
-python -m ruff check hoi4_translator.py hoi4translator/ tests/
-python -m unittest discover -s tests -v
+cargo fmt --all
+cargo clippy --all-targets
+cargo test
+cargo build --release
 ```
 
-Tests describe behaviour (format parser, marker validation, cache, cancellation, file writing). `tests/tk_stub.py` replaces tkinter and CustomTkinter with recording stubs, so GUI wiring is covered without a display — visual appearance still needs a human eye.
+Tests describe behaviour (format parser, markup validation, glossary, cache, file writing, exit
+codes), not implementation details, and never touch the network: any value they translate is either
+pinned by a glossary or pure markup.
+
+CI (`.github/workflows/build.yml`) runs `clippy` and `cargo test` on every pull request
+(module unit tests plus `tests/cli_integration.rs`), then runs the real binary over the demo
+mod with `--dry-run`, which exercises the parser, the CLI and the exit codes without the
+network. `cargo fmt --check` is blocking, but a pull request from this repository is fixed
+rather than failed: version 2.0 was written where no Rust toolchain was available, so the
+"Format the branch" step runs `cargo fmt --all`, adds `Cargo.lock` when it is missing, and
+commits the result to the branch. Forks and other runs only check the formatting.
+
+The Windows binary is built for tags and manual runs, smoke-tested with `--help`, and
+published with `SHA256SUMS.txt`. `Cargo.lock` is checked in, so every build resolves the
+same dependency versions.
+
+## 🔁 Coming from Python 1.4
+
+`python hoi4_translator.py --cli --src … --dst …` becomes `hoi4-translator --src … --dst …`; the
+flags are the same. JavaSim/JAR are not needed, the cache and report formats are unchanged, and the
+GUI settings (including the OS keyring) were not ported along with the window. Details:
+[`docs/PORTING-NOTES.md`](docs/PORTING-NOTES.md).
+
+## 📝 Roadmap
+
+- [x] Rust core: parser, validation, glossary, vanilla reuse, cache, reports.
+- [x] CLI with the same flags and exit codes as the Python build.
+- [x] Google/DeepL/MyMemory without Python, Java or external JARs.
+- [ ] Desktop window (Tauri 2 + React over the same Rust library) with live log and preview.
+- [ ] User replacement rules based on regular expressions.
+- [ ] DeepL-style glossary (server-side dictionary).
+- [ ] More engines (Yandex, Microsoft, local LLMs through an OpenAI-compatible API).
 
 ## 📄 License
 
