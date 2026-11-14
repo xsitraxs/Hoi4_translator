@@ -189,12 +189,18 @@ GUI settings (including the OS keyring) were not ported along with the window. D
 [`docs/PORTING-NOTES.md`](docs/PORTING-NOTES.md). The 2.0 audit — what was checked,
 what was found and fixed, and what is deliberately left open: [`docs/AUDIT.md`](docs/AUDIT.md).
 
+Turning a finished translation into a launcher-ready mod (folder layout,
+`descriptor.mod`, `.mod`, installation, common mistakes):
+[`docs/MAKE-A-TRANSLATED-MOD.md`](docs/MAKE-A-TRANSLATED-MOD.md).
+
 ## 📝 Roadmap
 
 - [x] Rust core: parser, validation, glossary, vanilla reuse, cache, reports.
 - [x] CLI with the same flags and exit codes as the Python build.
 - [x] Google/DeepL/MyMemory without Python, Java or external JARs.
-- [ ] Desktop window (Tauri 2 + React over the same Rust library) with live log and preview.
+- [ ] Desktop window (Tauri 2 over the same Rust library) with live log and preview.
+- [ ] Building the translation mod from the CLI: `--make-mod` (descriptor + `.mod` +
+      installation into the mods folder), see [`docs/MAKE-A-TRANSLATED-MOD.md`](docs/MAKE-A-TRANSLATED-MOD.md).
 - [ ] User replacement rules based on regular expressions.
 - [ ] DeepL-style glossary (server-side dictionary).
 - [ ] More engines (Yandex, Microsoft, local LLMs through an OpenAI-compatible API).
