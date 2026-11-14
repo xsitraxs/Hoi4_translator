@@ -173,22 +173,64 @@ pub fn is_supported_target(code: &str) -> bool {
 // Reading files
 // ---------------------------------------------------------------------------
 
-/// HOI4 requires UTF-8 with BOM, but older mods ship single-byte code pages.
-pub const SOURCE_ENCODINGS: [&str; 4] = ["utf-8-sig", "cp1251", "cp1252", "latin-1"];
+/// HOI4 requires UTF-8 with BOM, but older mods ship single-byte code pages and
+/// Windows editors happily save UTF-16. Every label `decode_source` can return is
+/// listed here, so the log line always names something the user can act on.
+pub const SOURCE_ENCODINGS: [&str; 7] = [
+    "utf-8-sig",
+    "utf-8",
+    "utf-16le",
+    "utf-16be",
+    "cp1251",
+    "cp1252",
+    "latin-1",
+];
 
 /// Decode bytes into text, reporting which encoding won.
+///
+/// A byte-order mark is a declaration and wins outright; UTF-16 files written by
+/// Notepad are common enough that decoding them as a single-byte code page would
+/// silently turn every character into a plausible-looking wrong one. Without a
+/// BOM the order is the one the Python build used — UTF-8, then cp1251, then
+/// cp1252, then latin-1 — but a candidate only wins when it decodes the whole
+/// file without an undefined byte, which is what makes cp1252 reachable at all.
 fn decode_source(bytes: &[u8]) -> (String, &'static str) {
     if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
         if let Ok(text) = std::str::from_utf8(rest) {
             return (text.to_string(), "utf-8-sig");
         }
     }
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        let (decoded, had_errors) = decode_utf16(rest, encoding_rs::UTF_16LE);
+        if !had_errors {
+            return (decoded, "utf-16le");
+        }
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        let (decoded, had_errors) = decode_utf16(rest, encoding_rs::UTF_16BE);
+        if !had_errors {
+            return (decoded, "utf-16be");
+        }
+    }
     if let Ok(text) = std::str::from_utf8(bytes) {
         return (text.to_string(), "utf-8");
     }
-    // Windows-1251 has a mapping for every byte, so this always succeeds.
-    let (decoded, _, _) = encoding_rs::WINDOWS_1251.decode(bytes);
-    (decoded.into_owned(), "cp1251")
+    for (encoding, label) in [
+        (encoding_rs::WINDOWS_1251, "cp1251"),
+        (encoding_rs::WINDOWS_1252, "cp1252"),
+    ] {
+        let (decoded, _actual, had_errors) = encoding.decode(bytes);
+        if !had_errors {
+            return (decoded.into_owned(), label);
+        }
+    }
+    // latin-1 maps every byte to a character, so it can never fail.
+    (bytes.iter().map(|byte| *byte as char).collect(), "latin-1")
+}
+
+fn decode_utf16(bytes: &[u8], encoding: &'static encoding_rs::Encoding) -> (String, bool) {
+    let (decoded, _actual, had_errors) = encoding.decode(bytes);
+    (decoded.into_owned(), had_errors)
 }
 
 /// Split text into physical lines, keeping their terminators.
@@ -505,7 +547,7 @@ pub fn load_existing_translations(
         Ok((lines, _)) => lines,
         Err(error) => {
             log(
-                &format!("Error reading existing translations: {error}"),
+                &format!("Ошибка чтения уже переведённого файла: {error}"),
                 LogTag::Warning,
             );
             return existing;
@@ -630,7 +672,14 @@ fn walk_yml(directory: &Path, found: &mut Vec<PathBuf>) {
 
     let mut subdirectories = Vec::new();
     for path in entries {
-        if path.is_dir() {
+        // `symlink_metadata` does not follow the link, so a symlinked or
+        // junctioned directory is never walked into: a cycle in a broken mod
+        // would otherwise recurse until the stack ran out. `os.walk` in the
+        // Python build did not follow links either.
+        let is_directory = fs::symlink_metadata(&path)
+            .map(|metadata| metadata.is_dir())
+            .unwrap_or(false);
+        if is_directory {
             subdirectories.push(path);
         } else if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
             if name.ends_with(".yml") && !name.eq_ignore_ascii_case("languages.yml") {
@@ -729,6 +778,71 @@ mod tests {
     #[test]
     fn an_unclosed_value_is_rejected() {
         assert!(split_value_line(r#"KEY:0 "never closed"#).is_none());
+    }
+
+    #[test]
+    fn every_declared_encoding_is_reachable() {
+        let done = "KEY:0 \"value\"\n";
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("utf-8-sig", {
+                let mut bytes = vec![0xEF, 0xBB, 0xBF];
+                bytes.extend_from_slice(done.as_bytes());
+                bytes
+            }),
+            ("utf-8", done.as_bytes().to_vec()),
+            ("utf-16le", {
+                let mut bytes = vec![0xFF, 0xFE];
+                for unit in done.encode_utf16() {
+                    bytes.extend_from_slice(&unit.to_le_bytes());
+                }
+                bytes
+            }),
+            ("utf-16be", {
+                let mut bytes = vec![0xFE, 0xFF];
+                for unit in done.encode_utf16() {
+                    bytes.extend_from_slice(&unit.to_be_bytes());
+                }
+                bytes
+            }),
+            // 0x98 has no cp1251 mapping, so this file can only be cp1252.
+            ("cp1252", b"KEY:0 \"Knig\"\n".to_vec()),
+            // 0x98 and 0x81 are undefined in cp1252 as well.
+            ("latin-1", b"KEY:0 \"Knig\"\n".to_vec()),
+        ];
+        for (expected, bytes) in cases {
+            let (text, encoding) = decode_source(&bytes);
+            assert_eq!(encoding, expected, "bytes {:?}", &bytes[..2]);
+            assert!(text.contains("KEY:0"), "{encoding}: {text:?}");
+        }
+        // Cyrillic in cp1251, checked through an actual character rather than
+        // the label alone.
+        let (text, encoding) = decode_source(b"KEY:0 \"\xcf\xf0\xe8\xe2\xe5\xf2\"\n");
+        assert_eq!(encoding, "cp1251");
+        assert!(text.contains("Привет"), "{text:?}");
+        assert!(SOURCE_ENCODINGS.contains(&encoding));
+    }
+
+    #[test]
+    fn symlinked_directories_are_not_walked_into() {
+        let root = std::env::temp_dir().join(format!("hoi4-walk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let real = root.join("localisation").join("english");
+        std::fs::create_dir_all(&real).expect("dirs");
+        std::fs::write(real.join("a_l_english.yml"), "l_english:\n").expect("write");
+        std::fs::write(real.join("languages.yml"), "l_english:\n").expect("write");
+        #[cfg(unix)]
+        {
+            let link = root.join("localisation").join("loop");
+            let _ = std::os::unix::fs::symlink(&root, &link);
+        }
+        let files = collect_yml_files(&root);
+        let names: Vec<String> = files
+            .iter()
+            .filter_map(|path| path.file_name())
+            .map(|name| name.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["a_l_english.yml".to_string()]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

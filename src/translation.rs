@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use regex::Regex;
@@ -32,6 +32,15 @@ const DEEPL_PRO_ENDPOINT: &str = "https://api.deepl.com/v2/translate";
 
 /// Attempts per engine, per line.
 pub const DEFAULT_RETRIES: usize = 3;
+
+/// Replacement for the HTTP call, used by tests to answer without a network.
+///
+/// The pipeline's write gate — refuse the file, or keep the English line — is
+/// only reachable through a *bad* engine answer, and a test that goes to the
+/// internet is a test that fails on a build machine. The seam exists for that
+/// and is not part of the public API.
+#[doc(hidden)]
+pub type EngineFn = Arc<dyn Fn(&str, &str) -> Result<String, String> + Send + Sync>;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -182,6 +191,7 @@ pub struct Translator {
     /// also means a user who deliberately switched engines keeps receiving the
     /// old text; that trade-off is opt-in.
     reuse_fallback_cache: bool,
+    engine_override: Option<EngineFn>,
 }
 
 impl Translator {
@@ -221,7 +231,15 @@ impl Translator {
             validation_report: Mutex::new(ValidationReport::new()),
             fallbacks: Mutex::new(BTreeMap::new()),
             reuse_fallback_cache: false,
+            engine_override: None,
         }
+    }
+
+    /// Answer every engine call with `answer` instead of HTTP. Test-only.
+    #[doc(hidden)]
+    pub fn with_engine_answer(mut self, answer: EngineFn) -> Self {
+        self.engine_override = Some(answer);
+        self
     }
 
     pub fn engine(&self) -> &str {
@@ -314,12 +332,12 @@ impl Translator {
                         validate_preview_translations(&[text.to_string()], &[cached.clone()]);
                     if !cached_issues.is_empty() {
                         log::warn!(
-                            "Invalid cached translation ignored ({cached_engine}): {}",
+                            "Сохранённый перевод отклонён проверкой ({cached_engine}): {}",
                             cached_issues.join("; ")
                         );
                         continue;
                     }
-                    log::debug!("Cache hit ({cached_engine})");
+                    log::debug!("Кэш: попадание ({cached_engine})");
                     return Ok(cached);
                 }
             }
@@ -450,12 +468,15 @@ impl Translator {
         target: &str,
         retries: usize,
     ) -> Result<String, String> {
+        if let Some(answer) = &self.engine_override {
+            return answer(protected, target);
+        }
         match engine {
             "Google" => self.google(protected, target, retries),
             "MyMemory" => self.mymemory(protected, target, retries),
             "DeepL" => {
                 let Some(api_key) = self.api_key.as_deref().filter(|key| !key.is_empty()) else {
-                    return Err("DeepL API key is missing".to_string());
+                    return Err("не указан ключ DeepL".to_string());
                 };
                 self.deepl(api_key, protected, target, retries)
             }
@@ -474,7 +495,7 @@ impl Translator {
 
     fn google_request(&self, chunk: &str, target: &str, retries: usize) -> Result<String, String> {
         let attempts = retries.max(1);
-        let mut last_error = String::from("Google Translate request failed");
+        let mut last_error = String::from("запрос к Google не удался");
         for attempt in 0..attempts {
             let response = http_agent()
                 .get(GOOGLE_ENDPOINT)
@@ -493,12 +514,12 @@ impl Translator {
                 }
                 Err(ureq::Error::Status(429, _)) => {
                     last_error =
-                        "Google Translate rate-limited the request after all retries".to_string();
+                        "Google ограничил частоту запросов после всех повторов".to_string();
                     if attempt + 1 >= attempts {
                         return Err(last_error);
                     }
                     let wait_seconds = 2u64.pow(attempt as u32) * 2;
-                    log::warn!("Rate limited (429). Ждём {wait_seconds}s...");
+                    log::warn!("Google ограничил частоту (429); ждём {wait_seconds} с");
                     std::thread::sleep(Duration::from_secs(wait_seconds));
                 }
                 Err(error) => {
@@ -530,7 +551,7 @@ impl Translator {
         retries: usize,
     ) -> Result<String, String> {
         let attempts = retries.max(1);
-        let mut last_error = String::from("MyMemory request failed");
+        let mut last_error = String::from("запрос к MyMemory не удался");
         for attempt in 0..attempts {
             let response = http_agent()
                 .get(MYMEMORY_ENDPOINT)
@@ -571,7 +592,7 @@ impl Translator {
         let source_code = deepl_language_code(&self.source_lang, false);
         let target_code = deepl_language_code(target, true);
         let attempts = retries.max(1);
-        let mut last_error = String::from("DeepL request failed");
+        let mut last_error = String::from("запрос к DeepL не удался");
         for attempt in 0..attempts {
             let response = http_agent()
                 .post(endpoint)

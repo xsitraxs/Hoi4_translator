@@ -215,6 +215,9 @@ Windows-бинарник собирается для тегов и ручног�
 
 Полная карта соответствий: [`docs/PORTING-NOTES.md`](docs/PORTING-NOTES.md).
 
+Аудит версии 2.0 — что проверено, что найдено и исправлено, что осталось и почему:
+[`docs/AUDIT.md`](docs/AUDIT.md).
+
 * Команда `python hoi4_translator.py --cli --src … --dst …` → `hoi4-translator --src … --dst …` (все ключи те же).
 * JavaSim/JAR не нужны; движок Google встроен.
 * Кэш и отчёты совместимы: те же таблицы SQLite и те же поля JSON/CSV.

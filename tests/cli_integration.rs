@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use hoi4_translator::cache::TranslationCache;
 use hoi4_translator::cli::{run, Cli};
@@ -307,5 +308,286 @@ fn the_report_is_written_next_to_the_output() {
     }
     let json = std::fs::read_to_string(&written[0]).expect("json");
     assert!(json.contains("\"written\": 1"), "{json}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A translator whose engines answer without a network, so the write gate can be
+/// exercised on answers the pipeline has to refuse.
+fn answering_translator(
+    answer: impl Fn(&str, &str) -> Result<String, String> + Send + Sync + 'static,
+) -> Translator {
+    Translator::with_cache(
+        "Google",
+        None,
+        "en",
+        2,
+        None,
+        TranslationCache::in_memory().expect("cache"),
+    )
+    .with_engine_answer(Arc::new(answer))
+}
+
+#[test]
+fn a_malformed_source_line_rejects_the_whole_file() {
+    let dir = temp_dir("malformed");
+    let src = dir
+        .join("localisation")
+        .join("english")
+        .join("bad_l_english.yml");
+    // A non-numeric revision marker: the line has a colon, so it is a broken
+    // localisation row rather than a comment or a stray line.
+    write(&src, "l_english:\n army.1:0 \"One\"\n army.2:zz \"bad version\"\n");
+    let dst = dir
+        .join("out")
+        .join("localisation")
+        .join("russian")
+        .join("bad_l_russian.yml");
+
+    let translator = pinned_translator(None);
+    let stop = AtomicBool::new(false);
+    let mut log = |_message: &str, _tag: LogTag| {};
+
+    let outcome = process_file(
+        &src,
+        &dst,
+        &translator,
+        &mut log,
+        false,
+        &stop,
+        "ru",
+        None,
+        BrokenLineMode::RejectFile,
+        None,
+    );
+
+    assert_eq!(outcome.result, Some(FileResult::Rejected));
+    assert_eq!(outcome.status, "rejected");
+    assert!(!dst.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_answer_that_loses_a_marker_rejects_the_file() {
+    let dir = temp_dir("lost-marker");
+    let src = dir
+        .join("localisation")
+        .join("english")
+        .join("drop_l_english.yml");
+    write(&src, "l_english:\n army.1:0 \"Rearm $STATE$ with tanks\"\n");
+    let dst = dir
+        .join("out")
+        .join("localisation")
+        .join("russian")
+        .join("drop_l_russian.yml");
+
+    // The engine drops the protected marker instead of copying it.
+    let translator = answering_translator(|_text, _lang| Ok("Перевооружить танками".to_string()));
+    let stop = AtomicBool::new(false);
+    let mut log = |_message: &str, _tag: LogTag| {};
+
+    let outcome = process_file(
+        &src,
+        &dst,
+        &translator,
+        &mut log,
+        false,
+        &stop,
+        "ru",
+        None,
+        BrokenLineMode::RejectFile,
+        None,
+    );
+
+    assert_eq!(outcome.result, Some(FileResult::Rejected));
+    assert_eq!(outcome.status, "rejected");
+    assert!(!dst.exists(), "a file that lost $STATE$ must not be written");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn keep_original_writes_the_english_line_and_translates_it_again_next_time() {
+    let dir = temp_dir("keep-original");
+    let src = dir
+        .join("localisation")
+        .join("english")
+        .join("keep_l_english.yml");
+    let english = "Rearm $STATE$ with tanks";
+    write(&src, &format!("l_english:\n army.1:0 \"{english}\"\n"));
+    let dst = dir
+        .join("out")
+        .join("localisation")
+        .join("russian")
+        .join("keep_l_russian.yml");
+
+    let broken = answering_translator(|_text, _lang| Ok("Перевооружить танками".to_string()));
+    let stop = AtomicBool::new(false);
+    let mut log = |_message: &str, _tag: LogTag| {};
+
+    let outcome = process_file(
+        &src,
+        &dst,
+        &broken,
+        &mut log,
+        false,
+        &stop,
+        "ru",
+        None,
+        BrokenLineMode::KeepOriginal,
+        None,
+    );
+
+    assert_eq!(outcome.result, Some(FileResult::Written(1)));
+    assert_eq!(outcome.recovered, 1, "the line must be counted as repaired");
+    let text = std::fs::read_to_string(&dst).expect("read");
+    assert!(text.contains(&format!("army.1:0 \"{english}\"")), "{text}");
+
+    // The stored value is English, so the next run must ask the engine again.
+    let good = answering_translator(|_text, _lang| Ok("Перевооружить $STATE$ танками".to_string()));
+    good.cache()
+        .set_source_hashes(&dst, &broken.cache().get_source_hashes(&dst));
+    let second = process_file(
+        &src,
+        &dst,
+        &good,
+        &mut log,
+        true,
+        &stop,
+        "ru",
+        None,
+        BrokenLineMode::RejectFile,
+        None,
+    );
+    assert_eq!(second.repaired, 1, "the repaired line must be translated again");
+    assert_eq!(second.skipped, 0);
+    let text = std::fs::read_to_string(&dst).expect("read");
+    assert!(text.contains("army.1:0 \"Перевооружить $STATE$ танками\""), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_unreachable_engine_is_an_error_not_english_output() {
+    let dir = temp_dir("unreachable");
+    let src = dir
+        .join("localisation")
+        .join("english")
+        .join("down_l_english.yml");
+    write(&src, "l_english:\n army.1:0 \"Rearm $STATE$ with tanks\"\n");
+    let dst = dir
+        .join("out")
+        .join("localisation")
+        .join("russian")
+        .join("down_l_russian.yml");
+
+    let translator = answering_translator(|_text, _lang| Err("нет сети".to_string()));
+    let stop = AtomicBool::new(false);
+    let mut log = |_message: &str, _tag: LogTag| {};
+
+    let outcome = process_file(
+        &src,
+        &dst,
+        &translator,
+        &mut log,
+        false,
+        &stop,
+        "ru",
+        None,
+        BrokenLineMode::KeepOriginal,
+        None,
+    );
+
+    assert_eq!(outcome.result, Some(FileResult::Error));
+    assert_eq!(outcome.status, "error");
+    assert!(
+        !dst.exists(),
+        "an engine outage must never be written as untranslated text"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_cp1251_source_is_decoded_before_it_is_translated() {
+    let dir = temp_dir("cp1251");
+    let src = dir
+        .join("localisation")
+        .join("english")
+        .join("legacy_l_english.yml");
+    std::fs::create_dir_all(src.parent().expect("parent")).expect("dirs");
+    // "Привет" in cp1251; UTF-8 decoding of these bytes fails, cp1251 succeeds.
+    let mut bytes = b"l_english:\n army.1:0 \"".to_vec();
+    bytes.extend_from_slice(&[0xCF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2]);
+    bytes.extend_from_slice(b"\"\n");
+    std::fs::write(&src, bytes).expect("write");
+    let dst = dir
+        .join("out")
+        .join("localisation")
+        .join("russian")
+        .join("legacy_l_russian.yml");
+
+    let glossary = Glossary::from_pairs(vec![("Привет", "Здравствуй")], "test");
+    let translator = pinned_translator(Some(glossary));
+    let stop = AtomicBool::new(false);
+    let mut log = |_message: &str, _tag: LogTag| {};
+
+    let outcome = process_file(
+        &src,
+        &dst,
+        &translator,
+        &mut log,
+        false,
+        &stop,
+        "ru",
+        None,
+        BrokenLineMode::RejectFile,
+        None,
+    );
+
+    assert_eq!(outcome.result, Some(FileResult::Written(1)));
+    let bytes = std::fs::read(&dst).expect("read");
+    assert!(bytes.starts_with(&[0xEF, 0xBB, 0xBF]), "output must be UTF-8 BOM");
+    let text = String::from_utf8(bytes).expect("utf-8");
+    assert!(text.contains("army.1:0 \"Здравствуй\""), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_written_file_leaves_no_temporary_siblings() {
+    let dir = temp_dir("temp-files");
+    let src = dir
+        .join("localisation")
+        .join("english")
+        .join("tidy_l_english.yml");
+    write(&src, "l_english:\n army.1:0 \"Division\"\n");
+    let dst = dir
+        .join("out")
+        .join("localisation")
+        .join("russian")
+        .join("tidy_l_russian.yml");
+
+    let glossary = Glossary::from_pairs(vec![("Division", "дивизия")], "test");
+    let translator = pinned_translator(Some(glossary));
+    let stop = AtomicBool::new(false);
+    let mut log = |_message: &str, _tag: LogTag| {};
+
+    let outcome = process_file(
+        &src,
+        &dst,
+        &translator,
+        &mut log,
+        false,
+        &stop,
+        "ru",
+        None,
+        BrokenLineMode::RejectFile,
+        None,
+    );
+    assert_eq!(outcome.result, Some(FileResult::Written(1)));
+
+    let leftovers: Vec<String> = std::fs::read_dir(dst.parent().expect("parent"))
+        .expect("read dir")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .filter(|name| name.ends_with(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "temporary files left: {leftovers:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }

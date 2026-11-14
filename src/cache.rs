@@ -270,6 +270,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cache_keys_stay_compatible_with_the_python_build() {
+        // sha256 of json.dumps([2, text, src, tgt, engine], ensure_ascii=False,
+        // separators=(",", ":")) — the exact key format 1.4.x wrote and 2.0 must
+        // keep reading, otherwise every cached translation is silently ignored.
+        assert_eq!(
+            TranslationCache::hash_key("Division", "en", "ru", "Google"),
+            "3fbfea85275925d24cc85bb1fa538bc8f565d81c48bcb9acd93e2c257e7d83d0"
+        );
+        assert_eq!(
+            TranslationCache::hash_key("Привет, мир", "en", "ru", "DeepL"),
+            "425582c0b71b4c16447f8c74b7e2737b0c188a4f18482a01a1afe51dfb30a799"
+        );
+    }
+
+    #[test]
     fn values_round_trip() {
         let cache = TranslationCache::in_memory().expect("cache");
         assert!(cache.get("Rearm $STATE$", "en", "ru", "Google").is_none());

@@ -186,7 +186,8 @@ same dependency versions.
 `python hoi4_translator.py --cli --src … --dst …` becomes `hoi4-translator --src … --dst …`; the
 flags are the same. JavaSim/JAR are not needed, the cache and report formats are unchanged, and the
 GUI settings (including the OS keyring) were not ported along with the window. Details:
-[`docs/PORTING-NOTES.md`](docs/PORTING-NOTES.md).
+[`docs/PORTING-NOTES.md`](docs/PORTING-NOTES.md). The 2.0 audit — what was checked,
+what was found and fixed, and what is deliberately left open: [`docs/AUDIT.md`](docs/AUDIT.md).
 
 ## 📝 Roadmap
 
