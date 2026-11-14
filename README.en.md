@@ -173,8 +173,9 @@ CI (`.github/workflows/build.yml`) runs `clippy` and `cargo test` on every pull 
 (module unit tests plus `tests/cli_integration.rs`), then runs the real binary over the demo
 mod with `--dry-run`, which exercises the parser, the CLI and the exit codes without the
 network. `cargo fmt --check` is still a separate, non-blocking step: version 2.0 was written
-where no Rust toolchain was available, so `cargo fmt --all` has not been run over it yet —
-run it once locally and drop `continue-on-error` from the Format step.
+where no Rust toolchain was available, so `cargo fmt --all` has not been run over it yet. Each
+CI run lists what is left in an annotation (`rustfmt: N hunks in M files`): run
+`cargo fmt --all` once locally and drop `continue-on-error` from the Format step.
 
 The Windows binary is built for tags and manual runs, smoke-tested with `--help`, and
 published with `SHA256SUMS.txt`. There is no `Cargo.lock` in the repository yet: the first
