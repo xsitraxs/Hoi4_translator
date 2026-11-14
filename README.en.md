@@ -172,14 +172,14 @@ pinned by a glossary or pure markup.
 CI (`.github/workflows/build.yml`) runs `clippy` and `cargo test` on every pull request
 (module unit tests plus `tests/cli_integration.rs`), then runs the real binary over the demo
 mod with `--dry-run`, which exercises the parser, the CLI and the exit codes without the
-network. `cargo fmt --check` is still a separate, non-blocking step: version 2.0 was written
-where no Rust toolchain was available, so `cargo fmt --all` has not been run over it yet. Each
-CI run lists what is left in an annotation (`rustfmt: N hunks in M files`): run
-`cargo fmt --all` once locally and drop `continue-on-error` from the Format step.
+network. `cargo fmt --check` is blocking, but a pull request from this repository is fixed
+rather than failed: version 2.0 was written where no Rust toolchain was available, so the
+"Format the branch" step runs `cargo fmt --all`, adds `Cargo.lock` when it is missing, and
+commits the result to the branch. Forks and other runs only check the formatting.
 
 The Windows binary is built for tags and manual runs, smoke-tested with `--help`, and
-published with `SHA256SUMS.txt`. There is no `Cargo.lock` in the repository yet: the first
-local build creates it — commit it to pin the dependency versions.
+published with `SHA256SUMS.txt`. `Cargo.lock` is checked in, so every build resolves the
+same dependency versions.
 
 ## 🔁 Coming from Python 1.4
 
