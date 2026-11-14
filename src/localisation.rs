@@ -710,7 +710,9 @@ mod tests {
         let parts = split_value_line(r#" GER_x:0 "§L"Shoot them again, they're not dead yet!"§!""#)
             .expect("line parses");
         assert_eq!(parts.prefix, " GER_x:0 ");
-        assert_eq!(parts.value, r#"§L"Shoot them again, they're not dead yet!"§!"#);
+        // The line opens with a quote, then the value itself contains quoted
+        // speaker text and a colour code: only the very last quote closes it.
+        assert_eq!(parts.value, "§L\"Shoot them again, they're not dead yet!\"§!");
         assert_eq!(parts.suffix, "");
     }
 

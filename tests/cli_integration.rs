@@ -66,14 +66,15 @@ fn pinned_translator(glossary: Option<Glossary>) -> Translator {
 fn the_dry_run_reports_the_bundled_demo_mod_and_writes_nothing() {
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let src = repo.join("examples").join("demo-mod");
-    let dst = temp_dir("dry-run");
+    let workspace = temp_dir("dry-run");
+    let dst = workspace.join("out");
 
     let mut cli = base_cli(src, dst.clone());
     cli.dry_run = true;
 
     assert_eq!(run(cli), 0, "a clean mod must pass the dry run");
     assert!(!dst.exists(), "the dry run must not create the output folder");
-    let _ = std::fs::remove_dir_all(&dst);
+    let _ = std::fs::remove_dir_all(&workspace);
 }
 
 #[test]
