@@ -93,9 +93,82 @@ pub fn settings_file() -> PathBuf {
 // Logging
 // ---------------------------------------------------------------------------
 
-struct AppLogger {
-    file: Option<Mutex<File>>,
+/// Rotate the log once it reaches a megabyte, keeping three older files: a run
+/// over a big mod can log tens of thousands of lines, and an append-only file
+/// would grow without limit on the user's disk.
+const LOG_MAX_BYTES: u64 = 1024 * 1024;
+const LOG_BACKUPS: usize = 3;
+
+fn backup_path(path: &Path, index: usize) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "hoi4_translator.log".to_string());
+    path.with_file_name(format!("{name}.{index}"))
 }
+
+fn rotate_log(path: &Path) {
+    let size = fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    if size < LOG_MAX_BYTES {
+        return;
+    }
+    for index in (1..LOG_BACKUPS).rev() {
+        let _ = fs::rename(backup_path(path, index), backup_path(path, index + 1));
+    }
+    let _ = fs::rename(path, backup_path(path, 1));
+}
+
+/// The single log file, opened once per process; `None` when it cannot be
+/// created, which must never stop a run.
+fn log_handle() -> Option<&'static Mutex<File>> {
+    static HANDLE: OnceLock<Option<Mutex<File>>> = OnceLock::new();
+    HANDLE
+        .get_or_init(|| {
+            let path = log_file();
+            rotate_log(&path);
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .ok()
+                .map(Mutex::new)
+        })
+        .as_ref()
+}
+
+fn write_log_line(line: &str) {
+    if let Some(handle) = log_handle() {
+        if let Ok(mut file) = handle.lock() {
+            let _ = file.write_all(line.as_bytes());
+        }
+    }
+}
+
+fn level_name(tag: LogTag) -> &'static str {
+    match tag {
+        LogTag::Info => "INFO",
+        LogTag::Warning => "WARNING",
+        LogTag::Error => "ERROR",
+    }
+}
+
+/// Append a pipeline message to the run log.
+///
+/// Pipeline messages reach the user through the CLI callback, which owns the
+/// console (and the `--quiet` filter); they still belong in the file, otherwise
+/// the log of a failed run says nothing about the files that failed.
+pub fn log_line(tag: LogTag, message: &str) {
+    write_log_line(&format!(
+        "{} - {} - {}\n",
+        now_iso8601(),
+        level_name(tag),
+        message
+    ));
+}
+
+struct AppLogger;
 
 impl log::Log for AppLogger {
     fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
@@ -106,24 +179,22 @@ impl log::Log for AppLogger {
         if !self.enabled(record.metadata()) {
             return;
         }
-        let line = format!(
-            "{} - {:<5} - {}\n",
-            now_iso8601(),
-            record.level().as_str(),
-            record.args()
-        );
+        let level = match record.level() {
+            log::Level::Error => "ERROR",
+            log::Level::Warn => "WARNING",
+            log::Level::Info => "INFO",
+            log::Level::Debug => "DEBUG",
+            log::Level::Trace => "TRACE",
+        };
+        let line = format!("{} - {level} - {}\n", now_iso8601(), record.args());
         eprint!("{line}");
-        if let Some(file) = &self.file {
-            if let Ok(mut handle) = file.lock() {
-                let _ = handle.write_all(line.as_bytes());
-            }
-        }
+        write_log_line(&line);
     }
 
     fn flush(&self) {
-        if let Some(file) = &self.file {
-            if let Ok(mut handle) = file.lock() {
-                let _ = handle.flush();
+        if let Some(handle) = log_handle() {
+            if let Ok(mut file) = handle.lock() {
+                let _ = file.flush();
             }
         }
     }
@@ -132,14 +203,7 @@ impl log::Log for AppLogger {
 /// Install the global logger once; a read-only data directory is not fatal.
 pub fn init_logging() {
     static LOGGER: OnceLock<AppLogger> = OnceLock::new();
-    let logger = LOGGER.get_or_init(|| AppLogger {
-        file: OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_file())
-            .ok()
-            .map(Mutex::new),
-    });
+    let logger = LOGGER.get_or_init(|| AppLogger);
     if log::set_logger(logger).is_ok() {
         log::set_max_level(log::LevelFilter::Info);
     }
@@ -268,6 +332,17 @@ fn temp_sibling(destination: &Path) -> PathBuf {
     destination.with_file_name(format!(".{name}.{}.{serial}.tmp", std::process::id()))
 }
 
+/// Persist a rename by flushing the directory that holds the new entry.
+#[cfg(unix)]
+fn sync_directory(directory: &Path) {
+    if let Ok(handle) = File::open(directory) {
+        let _ = handle.sync_all();
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_directory: &Path) {}
+
 /// Write `bytes` to a sibling temporary file, then replace `destination`.
 ///
 /// The game may be reading the output folder while a run is in progress, so a
@@ -288,12 +363,20 @@ pub fn atomic_write_bytes(destination: &Path, bytes: &[u8]) -> io::Result<()> {
         file.sync_all()?;
         drop(file);
         match fs::rename(&temporary, destination) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                sync_directory(&parent);
+                Ok(())
+            }
             Err(error) => {
-                // Windows refuses to replace an existing file with rename().
+                // Windows refuses to replace an existing file with rename(), so
+                // the old file is removed first. That leaves a window where the
+                // path does not exist, unlike the POSIX branch — the game must
+                // never see a *truncated* file, and it does not.
                 if destination.exists() {
                     fs::remove_file(destination)?;
-                    fs::rename(&temporary, destination)
+                    fs::rename(&temporary, destination)?;
+                    sync_directory(&parent);
+                    Ok(())
                 } else {
                     Err(error)
                 }

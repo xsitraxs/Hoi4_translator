@@ -43,55 +43,53 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Format the branch
-        # The 2.0 port was written in an environment without a Rust toolchain,
-        # so rustfmt never ran over it and there is no Cargo.lock in the
-        # repository. On pull requests from this repository the job fixes both
-        # itself and pushes the result, which keeps the check below strict for
-        # everyone else; forks and non-PR runs only check.
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        continue-on-error: true
-        shell: bash
-        run: |
-          cargo fmt --all
-          cargo generate-lockfile
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "already formatted, lockfile unchanged"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "style: apply cargo fmt and add Cargo.lock"
-          git push origin "HEAD:${GITHUB_HEAD_REF}"
-
-      - name: Format check
+      - name: Format
+        # The 2.0 code was written where no Rust toolchain existed, so rustfmt
+        # never ran over it and there is no Cargo.lock in the repository. On a
+        # pull request from this repository the job fixes both itself and pushes
+        # the result, so the check stays strict for forks and for main.
         id: fmt
         shell: bash
-        run: cargo fmt --all --check
-
-      - name: Report formatting differences
-        if: steps.fmt.outcome == 'failure'
-        shell: bash
         run: |
-          cargo fmt --all --check > "${{ runner.temp }}/fmt.log" 2>&1 || true
+          set -uo pipefail
+          tmp="${{ runner.temp }}"
 
-          python3 - "${{ runner.temp }}/fmt.log" <<'PY'
-          import collections, pathlib, re, sys
+          cat > "$tmp/annotate.py" <<'PY'
+          import sys
 
-          log = pathlib.Path(sys.argv[1]).read_text(errors="replace")
-          hunks = collections.Counter(
-              match.group(1).rsplit("/", 1)[-1]
-              for match in re.finditer(r"^Diff in (.+?):\d+:$", log, flags=re.M)
-          )
-          total = sum(hunks.values())
-          if total:
-              summary = ", ".join(f"{name} ({count})" for name, count in sorted(hunks.items()))
-              print(f"::error title=rustfmt: {total} hunks in {len(hunks)} files::{summary}")
-          else:
-              tail = "\n".join(log.strip().splitlines()[-6:])
-              print(f"::error title=rustfmt::{tail.replace('%', '%25').replace(chr(10), '%0A')}")
+          title, path = sys.argv[1], sys.argv[2]
+          text = open(path, errors="replace").read()[-1500:] if path != "-" else ""
+          text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print(f"::error title={title}::{text}")
           PY
+
+          if ! cargo fmt --all > "$tmp/fmt_run.log" 2>&1; then
+            python3 "$tmp/annotate.py" "cargo fmt --all failed" "$tmp/fmt_run.log"
+            exit 1
+          fi
+
+          cargo generate-lockfile > "$tmp/lock.log" 2>&1 || true
+
+          if [ -n "$(git status --porcelain)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A
+            git commit -m "style: apply cargo fmt and refresh Cargo.lock"
+            if [ -n "${GITHUB_HEAD_REF:-}" ]; then
+              if ! git push origin "HEAD:${GITHUB_HEAD_REF}" > "$tmp/push.log" 2>&1; then
+                python3 "$tmp/annotate.py" "git push failed" "$tmp/push.log"
+                exit 1
+              fi
+            else
+              echo "not a pull request; formatting left uncommitted"
+            fi
+          fi
+
+          if ! cargo fmt --all --check > "$tmp/fmt_check.log" 2>&1; then
+            python3 "$tmp/annotate.py" "rustfmt check" "$tmp/fmt_check.log"
+            exit 1
+          fi
+
       - name: Lint
         run: cargo clippy --all-targets
 

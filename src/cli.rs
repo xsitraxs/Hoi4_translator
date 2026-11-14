@@ -150,6 +150,9 @@ pub fn run(cli: Cli) -> i32 {
     if let Err(error) = validate_directory_relationships(&cli.src, &cli.dst) {
         return fail(&error.to_string());
     }
+    if cli.concurrency == 0 {
+        return fail("Параллельных запросов должно быть не меньше одного: --concurrency N (N ≥ 1)");
+    }
 
     let files = collect_yml_files(&cli.src);
     if files.is_empty() {
@@ -199,11 +202,11 @@ pub fn run(cli: Cli) -> i32 {
 
     let quiet = cli.quiet;
     let mut log_callback = move |message: &str, tag: LogTag| {
-        if quiet
-            && !(message.starts_with("  Ошибка")
-                || message.starts_with("  Файл")
-                || message.starts_with("  Превышено"))
-        {
+        // The log file always gets the message; the console decides whether to
+        // show it. Filtering on the severity, not on the text: a write failure
+        // must never be hidden by `--quiet` because its wording changed.
+        config::log_line(tag, message);
+        if quiet && tag != LogTag::Error {
             return;
         }
         let prefix = match tag {
