@@ -108,7 +108,9 @@ fn backup_path(path: &Path, index: usize) -> PathBuf {
 }
 
 fn rotate_log(path: &Path) {
-    let size = fs::metadata(path).map(|metadata| metadata.len()).unwrap_or(0);
+    let size = fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
     if size < LOG_MAX_BYTES {
         return;
     }

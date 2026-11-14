@@ -336,7 +336,10 @@ fn a_malformed_source_line_rejects_the_whole_file() {
         .join("bad_l_english.yml");
     // A non-numeric revision marker: the line has a colon, so it is a broken
     // localisation row rather than a comment or a stray line.
-    write(&src, "l_english:\n army.1:0 \"One\"\n army.2:zz \"bad version\"\n");
+    write(
+        &src,
+        "l_english:\n army.1:0 \"One\"\n army.2:zz \"bad version\"\n",
+    );
     let dst = dir
         .join("out")
         .join("localisation")
@@ -400,7 +403,10 @@ fn an_answer_that_loses_a_marker_rejects_the_file() {
 
     assert_eq!(outcome.result, Some(FileResult::Rejected));
     assert_eq!(outcome.status, "rejected");
-    assert!(!dst.exists(), "a file that lost $STATE$ must not be written");
+    assert!(
+        !dst.exists(),
+        "a file that lost $STATE$ must not be written"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -457,10 +463,16 @@ fn keep_original_writes_the_english_line_and_translates_it_again_next_time() {
         BrokenLineMode::RejectFile,
         None,
     );
-    assert_eq!(second.repaired, 1, "the repaired line must be translated again");
+    assert_eq!(
+        second.repaired, 1,
+        "the repaired line must be translated again"
+    );
     assert_eq!(second.skipped, 0);
     let text = std::fs::read_to_string(&dst).expect("read");
-    assert!(text.contains("army.1:0 \"Перевооружить $STATE$ танками\""), "{text}");
+    assert!(
+        text.contains("army.1:0 \"Перевооружить $STATE$ танками\""),
+        "{text}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -543,7 +555,10 @@ fn a_cp1251_source_is_decoded_before_it_is_translated() {
 
     assert_eq!(outcome.result, Some(FileResult::Written(1)));
     let bytes = std::fs::read(&dst).expect("read");
-    assert!(bytes.starts_with(&[0xEF, 0xBB, 0xBF]), "output must be UTF-8 BOM");
+    assert!(
+        bytes.starts_with(&[0xEF, 0xBB, 0xBF]),
+        "output must be UTF-8 BOM"
+    );
     let text = String::from_utf8(bytes).expect("utf-8");
     assert!(text.contains("army.1:0 \"Здравствуй\""), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
