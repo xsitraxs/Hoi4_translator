@@ -279,7 +279,8 @@ pub fn read_target_descriptor(path: &Path) -> Result<TargetMod> {
 
 /// Reject a file the game would not load, before it reaches the mod.
 fn check_translation_file(path: &Path, header: &str) -> Result<()> {
-    let bytes = fs::read(path).with_context(|| format!("не удалось прочитать {}", path.display()))?;
+    let bytes =
+        fs::read(path).with_context(|| format!("не удалось прочитать {}", path.display()))?;
     if !bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
         bail!(
             "{}: файл перевода должен быть в UTF-8 с BOM — игра не читает такой файл",
@@ -394,11 +395,8 @@ pub fn paradox_mods_dir() -> Option<PathBuf> {
             .filter(|candidate| candidate.is_absolute())
         {
             Some(directory) => directory,
-            None => std::env::var_os("HOME").map(|home| {
-                PathBuf::from(home)
-                    .join(".local")
-                    .join("share")
-            })?,
+            None => std::env::var_os("HOME")
+                .map(|home| PathBuf::from(home).join(".local").join("share"))?,
         }
     };
     path.push("Paradox Interactive");
@@ -425,7 +423,11 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
             copy_tree(&path, &target)?;
         } else {
             fs::copy(&path, &target).with_context(|| {
-                format!("не удалось скопировать {} в {}", path.display(), target.display())
+                format!(
+                    "не удалось скопировать {} в {}",
+                    path.display(),
+                    target.display()
+                )
             })?;
         }
     }
@@ -436,10 +438,7 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
 fn scratch_path(directory: &Path, folder: &str, tag: &str) -> PathBuf {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let serial = COUNTER.fetch_add(1, Ordering::Relaxed);
-    directory.join(format!(
-        ".{folder}.{tag}-{}-{serial}",
-        std::process::id()
-    ))
+    directory.join(format!(".{folder}.{tag}-{}-{serial}", std::process::id()))
 }
 
 /// Refuse to touch a folder that holds somebody else's mod.
@@ -723,7 +722,13 @@ mod tests {
     #[test]
     fn descriptor_and_mod_file_differ_only_by_path() {
         let root = temp_dir("descriptor");
-        write_translation(&root, "russian", "a_l_russian.yml", "l_russian:", " A:0 \"А\"");
+        write_translation(
+            &root,
+            "russian",
+            "a_l_russian.yml",
+            "l_russian:",
+            " A:0 \"А\"",
+        );
         let result = build(&options(root.clone(), root.clone()), &mut |_, _| {}).expect("built");
 
         let descriptor = fs::read_to_string(&result.descriptor).expect("descriptor");
@@ -733,7 +738,10 @@ mod tests {
         assert!(descriptor.contains("name=\"MyMod — русский перевод\""));
         assert!(descriptor.contains("dependencies={\n\t\"MyMod\"\n}"));
         assert!(descriptor.contains("supported_version=\"1.*\""));
-        assert!(!descriptor.contains("path="), "descriptor must not carry path");
+        assert!(
+            !descriptor.contains("path="),
+            "descriptor must not carry path"
+        );
         assert!(mod_file.contains("path=\"mod/MyMod_ru\""));
 
         let expected = format!(
@@ -749,8 +757,20 @@ mod tests {
     #[test]
     fn translation_files_are_copied_with_their_language_folder() {
         let root = temp_dir("copy");
-        write_translation(&root, "russian", "a_l_russian.yml", "l_russian:", " A:0 \"А\"");
-        write_translation(&root, "english", "a_l_english.yml", "l_english:", " A:0 \"A\"");
+        write_translation(
+            &root,
+            "russian",
+            "a_l_russian.yml",
+            "l_russian:",
+            " A:0 \"А\"",
+        );
+        write_translation(
+            &root,
+            "english",
+            "a_l_english.yml",
+            "l_english:",
+            " A:0 \"A\"",
+        );
         let result = build(&options(root.clone(), root.clone()), &mut |_, _| {}).expect("built");
 
         let russian = result
@@ -793,7 +813,13 @@ mod tests {
     #[test]
     fn a_file_without_a_bom_or_the_right_header_is_refused() {
         let root = temp_dir("invalid");
-        write_translation(&root, "russian", "a_l_russian.yml", "l_russian:", " A:0 \"А\"");
+        write_translation(
+            &root,
+            "russian",
+            "a_l_russian.yml",
+            "l_russian:",
+            " A:0 \"А\"",
+        );
         let bad = root
             .join("localisation")
             .join("russian")
@@ -850,7 +876,13 @@ mod tests {
     #[test]
     fn the_translation_folder_cannot_be_named_like_the_mod_folder() {
         let root = temp_dir("clobber");
-        write_translation(&root, "russian", "a_l_russian.yml", "l_russian:", " A:0 \"А\"");
+        write_translation(
+            &root,
+            "russian",
+            "a_l_russian.yml",
+            "l_russian:",
+            " A:0 \"А\"",
+        );
         let mut broken = options(root.clone(), root.clone());
         broken.folder = "localisation".to_string();
         let error = build(&broken, &mut |_, _| {}).expect_err("must not overwrite the run");
@@ -867,7 +899,13 @@ mod tests {
     #[test]
     fn rebuilding_replaces_our_own_version_and_refuses_a_foreign_one() {
         let root = temp_dir("rebuild");
-        write_translation(&root, "russian", "a_l_russian.yml", "l_russian:", " A:0 \"А\"");
+        write_translation(
+            &root,
+            "russian",
+            "a_l_russian.yml",
+            "l_russian:",
+            " A:0 \"А\"",
+        );
         build(&options(root.clone(), root.clone()), &mut |_, _| {}).expect("first build");
         build(&options(root.clone(), root.clone()), &mut |_, _| {}).expect("second build");
 
@@ -882,7 +920,13 @@ mod tests {
     #[test]
     fn install_copies_the_mod_and_its_descriptor_into_the_mods_folder() {
         let root = temp_dir("install");
-        write_translation(&root, "russian", "a_l_russian.yml", "l_russian:", " A:0 \"А\"");
+        write_translation(
+            &root,
+            "russian",
+            "a_l_russian.yml",
+            "l_russian:",
+            " A:0 \"А\"",
+        );
         let mods = root.join("mods");
         let mut options = options(root.clone(), root.clone());
         options.install = true;
@@ -917,7 +961,13 @@ mod tests {
     #[test]
     fn install_refuses_to_replace_a_mod_it_did_not_build() {
         let root = temp_dir("install-foreign");
-        write_translation(&root, "russian", "a_l_russian.yml", "l_russian:", " A:0 \"А\"");
+        write_translation(
+            &root,
+            "russian",
+            "a_l_russian.yml",
+            "l_russian:",
+            " A:0 \"А\"",
+        );
         let mods = root.join("mods");
         let stolen = mods.join("MyMod_ru");
         fs::create_dir_all(&stolen).expect("dirs");

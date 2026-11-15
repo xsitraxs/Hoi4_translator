@@ -192,7 +192,9 @@ fn install_cancel_handler() {
             eprintln!("Останавливаюсь после текущей строки (ещё один Ctrl+C — выйти сразу)");
         });
         if installed.is_err() {
-            log::warn!("Обработку Ctrl+C включить не удалось: прервать можно только закрытием процесса");
+            log::warn!(
+                "Обработку Ctrl+C включить не удалось: прервать можно только закрытием процесса"
+            );
         }
     });
 }
@@ -280,7 +282,10 @@ pub fn run(cli: Cli) -> i32 {
         for (given, flag) in [
             (cli.mod_folder.is_some(), "--mod-folder"),
             (cli.mod_version.is_some(), "--mod-version"),
-            (cli.mod_supported_version.is_some(), "--mod-supported-version"),
+            (
+                cli.mod_supported_version.is_some(),
+                "--mod-supported-version",
+            ),
             (cli.mod_target.is_some(), "--mod-target"),
         ] {
             if given {

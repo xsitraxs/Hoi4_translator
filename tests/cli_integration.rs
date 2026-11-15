@@ -604,9 +604,11 @@ fn a_finished_run_is_packed_into_a_launcher_ready_mod() {
         "the path belongs in the .mod file only: {descriptor}"
     );
 
-    let mod_file =
-        std::fs::read_to_string(output.join("Pack_Test_ru.mod")).expect(".mod file");
-    assert!(mod_file.ends_with("path=\"mod/Pack_Test_ru\"\n"), "{mod_file}");
+    let mod_file = std::fs::read_to_string(output.join("Pack_Test_ru.mod")).expect(".mod file");
+    assert!(
+        mod_file.ends_with("path=\"mod/Pack_Test_ru\"\n"),
+        "{mod_file}"
+    );
 
     let packed = mod_root
         .join("localisation")
