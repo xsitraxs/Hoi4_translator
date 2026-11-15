@@ -125,9 +125,7 @@ pub fn mod_folder_name(display_name: &str, target_lang_code: &str) -> String {
     }
     if base.len() > MAX_FOLDER_LEN {
         base.truncate(MAX_FOLDER_LEN);
-        base = base
-            .trim_end_matches(|character: char| character == '_' || character == '-')
-            .to_string();
+        base = base.trim_end_matches(['_', '-']).to_string();
     }
     if base.trim_matches('_').is_empty() {
         return if language.is_empty() {

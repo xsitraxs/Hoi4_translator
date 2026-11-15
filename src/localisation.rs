@@ -891,7 +891,7 @@ mod tests {
 
         // Without a forced encoding the detector still decides.
         if forced_source_encoding().is_none() {
-            assert_eq!(decode_source(&bytes).1, "cp1251");
+            assert_eq!(decode_source(bytes).1, "cp1251");
         }
     }
 
