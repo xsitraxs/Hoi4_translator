@@ -249,14 +249,8 @@ impl TranslationCache {
     pub fn describe(path: &Path, stats: &BTreeMap<&'static str, usize>) -> Vec<String> {
         let mut lines = vec![
             format!("Кэш: {}", path.display()),
-            format!(
-                "  переводов: {}",
-                stats.get("total").copied().unwrap_or(0)
-            ),
-            format!(
-                "  движков: {}",
-                stats.get("engines").copied().unwrap_or(0)
-            ),
+            format!("  переводов: {}", stats.get("total").copied().unwrap_or(0)),
+            format!("  движков: {}", stats.get("engines").copied().unwrap_or(0)),
             format!(
                 "  файлов с сохранёнными исходниками: {}",
                 stats.get("files").copied().unwrap_or(0)

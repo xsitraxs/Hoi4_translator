@@ -551,10 +551,7 @@ fn run_inner(settings: &JobSettings, sink: &Sink, stop: &AtomicBool) -> Result<J
                     if let Some(installed) = &result.installed {
                         sink(JobEvent::Log {
                             level: "info".to_string(),
-                            message: format!(
-                                "Установлен в папку игры: {}",
-                                installed.display()
-                            ),
+                            message: format!("Установлен в папку игры: {}", installed.display()),
                         });
                     }
                 }
