@@ -575,8 +575,7 @@ fn a_finished_run_is_packed_into_a_launcher_ready_mod() {
     let dir = temp_dir("pack");
     let src = dir.join("mod");
     write(
-        &src
-            .join("localisation")
+        &src.join("localisation")
             .join("english")
             .join("pack_l_english.yml"),
         "l_english:\n army.1:0 \"Division\"\n",
@@ -602,10 +601,7 @@ fn a_finished_run_is_packed_into_a_launcher_ready_mod() {
     );
 
     let mod_file = std::fs::read_to_string(output.join("Pack_Test.mod")).expect(".mod file");
-    assert!(
-        mod_file.ends_with("path=\"mod/Pack_Test\"\n"),
-        "{mod_file}"
-    );
+    assert!(mod_file.ends_with("path=\"mod/Pack_Test\"\n"), "{mod_file}");
 
     let packed = mod_root
         .join("localisation")
