@@ -568,14 +568,24 @@ pub fn build(options: &ModPackOptions, log: &mut dyn FnMut(&str, LogTag)) -> Res
     let database = get_hoi4_language_name(&options.target_lang_code)?;
     let mod_root = options.output_dir.join(&options.folder);
 
-    // A previous build sits inside the same output folder. It is output, not a
-    // source: without this filter a second run would package the first one's
-    // copy of every file and then refuse itself over the collision.
-    let candidates: Vec<PathBuf> = collect_yml_files(&options.source_dir)
+    // Two layouts are accepted: the mod root with `localisation/` inside, and
+    // the language folder itself. The mod root wins when it exists, so a mods
+    // folder, a previous build or anything else lying next to the translation is
+    // never mistaken for a source.
+    let localisation_root = options.source_dir.join("localisation");
+    let scan_root = if localisation_root.is_dir() {
+        localisation_root
+    } else {
+        options.source_dir.clone()
+    };
+
+    // A previous build sits inside the same output folder: it is output, not a
+    // source, and packaging its copy would make a second run collide with it.
+    let candidates: Vec<PathBuf> = collect_yml_files(&scan_root)
         .into_iter()
         .filter(|path| !path.starts_with(&mod_root))
         .collect();
-    let files = plan_translation_files(&options.source_dir, database, &candidates)?;
+    let files = plan_translation_files(&scan_root, database, &candidates)?;
     ensure_replaceable(&mod_root, options)?;
 
     fs::create_dir_all(&options.output_dir)
