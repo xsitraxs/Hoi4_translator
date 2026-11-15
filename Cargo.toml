@@ -9,6 +9,8 @@ repository = "https://github.com/xsitraxs/Hoi4_translator"
 readme = "README.md"
 keywords = ["hoi4", "localisation", "translation", "paradox"]
 categories = ["command-line-utilities"]
+# Two binaries share this crate; `cargo run` keeps meaning the console one.
+default-run = "hoi4-translator"
 
 [lib]
 name = "hoi4_translator"

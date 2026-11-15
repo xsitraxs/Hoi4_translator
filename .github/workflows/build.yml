@@ -151,7 +151,7 @@ jobs:
         # Proves the parser, the CLI and the process exit codes work on a real
         # mod without touching the network.
         run: |
-          cargo run --release -- --src examples/demo-mod --dst /tmp/hoi4-out --target ru --dry-run
+          cargo run --release --bin hoi4-translator -- --src examples/demo-mod --dst /tmp/hoi4-out --target ru --dry-run
 
       - name: Smoke-test the window over HTTP
         # The window is a hand-written HTTP server, so the only honest check is a
