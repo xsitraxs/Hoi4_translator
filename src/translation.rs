@@ -13,7 +13,7 @@ use std::time::Duration;
 use regex::Regex;
 
 use crate::cache::TranslationCache;
-use crate::config::SEMAPHORE_LIMIT;
+use crate::config::DEFAULT_CONCURRENCY;
 use crate::glossary::Glossary;
 use crate::providers::{
     deepl_language_code, fallback_chain, provider_language_code, GOOGLE_ENDPOINT_ENGINE,
@@ -297,6 +297,21 @@ impl Translator {
             );
         }
         engines
+            .iter()
+            .map(|engine| self.cache_label(engine))
+            .collect()
+    }
+
+    /// The engine name used in the cache key.
+    ///
+    /// A glossary changes the answer for the same text, so its fingerprint joins
+    /// the key: a run with a glossary neither reads nor overwrites the entries
+    /// of a run without one, and both keep their own translations.
+    fn cache_label(&self, engine: &str) -> String {
+        match &self.glossary {
+            Some(glossary) => format!("{engine}#gl:{}", glossary.fingerprint()),
+            None => engine.to_string(),
+        }
     }
 
     fn note_fallback(&self, used_engine: &str) {
@@ -320,26 +335,24 @@ impl Translator {
             return Ok(text.to_string());
         }
 
-        // A glossary changes what the engine is asked, so a cached translation
-        // made without it must not be served.
-        if self.glossary.is_none() {
-            for cached_engine in self.cache_engines() {
-                if let Some(cached) =
-                    self.cache
-                        .get(text, &self.source_lang, target_lang, &cached_engine)
-                {
-                    let cached_issues =
-                        validate_preview_translations(&[text.to_string()], &[cached.clone()]);
-                    if !cached_issues.is_empty() {
-                        log::warn!(
-                            "Сохранённый перевод отклонён проверкой ({cached_engine}): {}",
-                            cached_issues.join("; ")
-                        );
-                        continue;
-                    }
-                    log::debug!("Кэш: попадание ({cached_engine})");
-                    return Ok(cached);
+        // A glossary changes what the engine is asked, so it is part of the key
+        // (see `cache_label`): an answer made without it is never served here.
+        for cached_engine in self.cache_engines() {
+            if let Some(cached) =
+                self.cache
+                    .get(text, &self.source_lang, target_lang, &cached_engine)
+            {
+                let cached_issues =
+                    validate_preview_translations(&[text.to_string()], &[cached.clone()]);
+                if !cached_issues.is_empty() {
+                    log::warn!(
+                        "Сохранённый перевод отклонён проверкой ({cached_engine}): {}",
+                        cached_issues.join("; ")
+                    );
+                    continue;
                 }
+                log::debug!("Кэш: попадание ({cached_engine})");
+                return Ok(cached);
             }
         }
 
@@ -422,10 +435,15 @@ impl Translator {
                 let mut report = self.report();
                 report.record(file_ctx, key_ctx, &[], false);
             }
-            if !candidate.is_empty() && candidate != text && self.glossary.is_none() {
+            if !candidate.is_empty() && candidate != text {
                 // Only a value that passed validation may be reused later.
-                self.cache
-                    .set(text, &candidate, &self.source_lang, target_lang, engine);
+                self.cache.set(
+                    text,
+                    &candidate,
+                    &self.source_lang,
+                    target_lang,
+                    &self.cache_label(engine),
+                );
             }
             return Ok(candidate);
         }
@@ -726,7 +744,7 @@ impl Translator {
 
 /// Concurrency used when the caller does not specify one.
 pub fn default_concurrency() -> usize {
-    SEMAPHORE_LIMIT
+    DEFAULT_CONCURRENCY
 }
 
 #[cfg(test)]
@@ -786,6 +804,51 @@ mod tests {
                 .translate_text("Rearm $STATE$", "ru", "f.yml", "KEY")
                 .expect("cache hit"),
             "Перевооружите $STATE$"
+        );
+    }
+
+    #[test]
+    fn a_glossary_run_keeps_its_answers_under_its_own_key() {
+        let glossary = Glossary::from_pairs(vec![("Rearm", "Перевооружить")], "test");
+        let answer: EngineFn = Arc::new(|text: &str, _target: &str| Ok(format!("{text} — да")));
+        let translator = offline_translator(Some(glossary.clone())).with_engine_answer(answer);
+
+        let value = translator
+            .translate_text("Rearm now", "ru", "f.yml", "K")
+            .expect("translated");
+        assert!(value.contains("да"), "{value}");
+
+        let label = format!("{OFFLINE_ENGINE}#gl:{}", glossary.fingerprint());
+        assert!(
+            translator
+                .cache()
+                .get("Rearm now", "en", "ru", &label)
+                .is_some(),
+            "an answer made with a glossary must be cached"
+        );
+        assert!(
+            translator
+                .cache()
+                .get("Rearm now", "en", "ru", OFFLINE_ENGINE)
+                .is_none(),
+            "and never under the plain engine name"
+        );
+    }
+
+    #[test]
+    fn a_cached_answer_is_reused_by_a_glossary_run() {
+        let glossary = Glossary::from_pairs(vec![("Rearm", "Перевооружить")], "test");
+        let translator = offline_translator(Some(glossary.clone()));
+        let label = format!("{OFFLINE_ENGINE}#gl:{}", glossary.fingerprint());
+        translator
+            .cache()
+            .set("Rearm now", "Перевооружить now", "en", "ru", &label);
+
+        assert_eq!(
+            translator
+                .translate_text("Rearm now", "ru", "f.yml", "K")
+                .expect("cache hit"),
+            "Перевооружить now"
         );
     }
 

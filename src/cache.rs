@@ -61,6 +61,12 @@ impl TranslationCache {
 
     fn init(&self) -> Result<()> {
         let connection = self.connection();
+        // Two runs may share the cache (a window and a command line, or a second
+        // window); WAL plus a busy timeout turns "database is locked" into a
+        // wait. Both are best-effort: a read-only or network file still works.
+        let _ = connection.execute_batch(
+            "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;",
+        );
         connection.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS cache (

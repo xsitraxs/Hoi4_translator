@@ -91,7 +91,27 @@ jobs:
           fi
 
       - name: Lint
-        run: cargo clippy --all-targets
+        # A failing `cargo clippy` only says "exit code 101" on the run page, so
+        # the diagnostics are turned into annotations: a compile error has to be
+        # readable without downloading a job log.
+        shell: bash
+        run: |
+          set +e
+          cargo clippy --all-targets --message-format short > "${{ runner.temp }}/clippy.log" 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            python3 - "${{ runner.temp }}/clippy.log" <<'PY'
+          import pathlib
+          import sys
+
+          lines = pathlib.Path(sys.argv[1]).read_text(errors="replace").splitlines()
+          picked = [line for line in lines if ".rs:" in line][:20] or lines[-15:]
+          for line in picked:
+              text = line.replace("%", "%25").replace("\r", "%0D")[:900]
+              print(f"::error title=clippy::{text}")
+          PY
+            exit "$status"
+          fi
 
       - name: Unit and integration tests
         id: tests

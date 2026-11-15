@@ -78,7 +78,13 @@ fn walk(directory: &Path, suffix: &str, found: &mut Vec<PathBuf>) {
 
     let mut subdirectories = Vec::new();
     for path in entries {
-        if path.is_dir() {
+        // `symlink_metadata` does not follow the link, exactly as in
+        // `localisation::walk_yml`: a junction loop would otherwise recurse
+        // until the stack ran out.
+        let is_directory = std::fs::symlink_metadata(&path)
+            .map(|metadata| metadata.is_dir())
+            .unwrap_or(false);
+        if is_directory {
             subdirectories.push(path);
         } else if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
             if name.to_lowercase().ends_with(suffix) {

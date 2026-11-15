@@ -17,7 +17,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const APP_NAME: &str = "Hoi4Translator";
 
 /// Default number of concurrent translation requests for one run.
-pub const SEMAPHORE_LIMIT: usize = 15;
+pub const DEFAULT_CONCURRENCY: usize = 15;
 
 /// Bump whenever translation/post-processing semantics change so stale cache
 /// entries cannot bypass newer validation or typography rules.
