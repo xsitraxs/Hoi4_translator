@@ -176,9 +176,7 @@ fn meta() -> Value {
         .collect();
     let broken_lines: Vec<Value> = BROKEN_LINE_MODES
         .iter()
-        .map(|(mode, label)| {
-            json!({ "value": job::broken_lines_value(*mode), "label": label })
-        })
+        .map(|(mode, label)| json!({ "value": job::broken_lines_value(*mode), "label": label }))
         .collect();
     json!({
         "version": VERSION,
@@ -236,10 +234,9 @@ pub fn route(state: &AppState, method: &str, target: &str, body: &str) -> Respon
                         spawn_run(state.shared(), settings);
                         Response::json(200, &json!({ "ok": true }))
                     }
-                    Err(error) => Response::error(
-                        400,
-                        &format!("Не удалось разобрать настройки: {error}"),
-                    ),
+                    Err(error) => {
+                        Response::error(400, &format!("Не удалось разобрать настройки: {error}"))
+                    }
                 }
             }
         }
@@ -377,12 +374,11 @@ fn bind_listener(host: &str, port: u16) -> Result<TcpListener> {
         Ok(listener) => Ok(listener),
         Err(error) if port != 0 => {
             log::warn!("Порт {port} занят ({error}), беру свободный");
-            TcpListener::bind((host, 0))
-                .with_context(|| format!("не удалось занять ни порт {port}, ни свободный на {host}"))
+            TcpListener::bind((host, 0)).with_context(|| {
+                format!("не удалось занять ни порт {port}, ни свободный на {host}")
+            })
         }
-        Err(error) => {
-            Err(error).with_context(|| format!("не удалось занять порт на {host}"))
-        }
+        Err(error) => Err(error).with_context(|| format!("не удалось занять порт на {host}")),
     }
 }
 
@@ -586,7 +582,10 @@ mod tests {
         client.read_to_string(&mut response).expect("read");
 
         assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
-        assert!(response.contains("Content-Type: application/json"), "{response}");
+        assert!(
+            response.contains("Content-Type: application/json"),
+            "{response}"
+        );
         assert!(response.contains("\"engines\""), "{response}");
         let _ = worker.join();
     }
