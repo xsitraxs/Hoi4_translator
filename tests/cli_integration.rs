@@ -49,6 +49,12 @@ fn base_cli(src: PathBuf, dst: PathBuf) -> Cli {
         dry_run: false,
         quiet: true,
         cli: false,
+        make_mod: None,
+        mod_folder: None,
+        mod_version: "1.0.0".to_string(),
+        mod_supported_version: None,
+        mod_target: None,
+        install: false,
     }
 }
 
@@ -561,6 +567,53 @@ fn a_cp1251_source_is_decoded_before_it_is_translated() {
     );
     let text = String::from_utf8(bytes).expect("utf-8");
     assert!(text.contains("army.1:0 \"Здравствуй\""), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_finished_run_is_packed_into_a_launcher_ready_mod() {
+    let dir = temp_dir("pack");
+    let src = dir.join("mod");
+    write(
+        &src
+            .join("localisation")
+            .join("english")
+            .join("pack_l_english.yml"),
+        "l_english:\n army.1:0 \"Division\"\n",
+    );
+    // One pinned term, so the run never reaches an engine.
+    let glossary = dir.join("glossary.tsv");
+    write(&glossary, "Division\tдивизия\n");
+
+    let mut cli = base_cli(src, dir.join("mod-ru"));
+    cli.glossary = Some(glossary);
+    cli.make_mod = Some("Pack Test".to_string());
+    assert_eq!(run(cli), 0, "a pinned value must translate and pack");
+
+    let output = dir.join("mod-ru");
+    let mod_root = output.join("Pack_Test");
+    let descriptor =
+        std::fs::read_to_string(mod_root.join("descriptor.mod")).expect("descriptor.mod");
+    assert!(descriptor.starts_with('\u{feff}'), "descriptor needs a BOM");
+    assert!(descriptor.contains("name=\"Pack Test\""), "{descriptor}");
+    assert!(
+        !descriptor.contains("path="),
+        "the path belongs in the .mod file only: {descriptor}"
+    );
+
+    let mod_file = std::fs::read_to_string(output.join("Pack_Test.mod")).expect(".mod file");
+    assert!(
+        mod_file.ends_with("path=\"mod/Pack_Test\"\n"),
+        "{mod_file}"
+    );
+
+    let packed = mod_root
+        .join("localisation")
+        .join("russian")
+        .join("pack_l_russian.yml");
+    assert!(packed.exists(), "translation was not packed: {packed:?}");
+    let text = std::fs::read(&packed).expect("packed bytes");
+    assert!(text.starts_with(&[0xEF, 0xBB, 0xBF]), "BOM must survive");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
