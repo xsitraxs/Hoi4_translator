@@ -16,12 +16,14 @@ use std::sync::Arc;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::cache::TranslationCache;
 use crate::config::{self, LogTag, MAX_CONCURRENCY};
 use crate::glossary::Glossary;
 use crate::inspect::{format_report, inspect_files};
 use crate::localisation::{
-    collect_yml_files, is_supported_target, rename_dst, validate_directory_relationships,
-    validate_output_path_collisions, HOI4_TARGET_LANGS,
+    collect_yml_files, is_forced_encoding, is_supported_target, rename_dst,
+    validate_directory_relationships, validate_output_path_collisions, FORCED_ENCODINGS,
+    HOI4_TARGET_LANGS,
 };
 use crate::modpack;
 use crate::pipeline::{process_file, BrokenLineMode, FileResult, BROKEN_LINE_MODES};
@@ -48,6 +50,10 @@ fn default_engine() -> String {
 
 fn default_broken_lines() -> String {
     "reject".to_string()
+}
+
+fn default_source_encoding() -> String {
+    "auto".to_string()
 }
 
 /// The mod to build at the end, when the user asked for one.
@@ -83,6 +89,9 @@ pub struct JobSettings {
     pub source_lang: String,
     #[serde(default = "default_engine")]
     pub engine: String,
+    /// Source encoding: `auto`, `utf-8`, `cp1251`, `cp1252` or `latin-1`.
+    #[serde(default = "default_source_encoding")]
+    pub source_encoding: String,
     #[serde(default)]
     pub api_key: Option<String>,
     #[serde(default)]
@@ -115,6 +124,7 @@ impl Default for JobSettings {
             target: default_target(),
             source_lang: default_source_lang(),
             engine: default_engine(),
+            source_encoding: default_source_encoding(),
             api_key: None,
             glossary: None,
             vanilla: None,
@@ -222,6 +232,28 @@ pub fn run(settings: &JobSettings, sink: &Sink, stop: &AtomicBool) -> JobOutcome
 }
 
 fn run_inner(settings: &JobSettings, sink: &Sink, stop: &AtomicBool) -> Result<JobOutcome> {
+    // Argument checks come first, in the order the console makes them: a typo
+    // must cost a second, not a full run.
+    let source_encoding = settings.source_encoding.trim().to_lowercase();
+    if source_encoding != "auto" && !is_forced_encoding(&source_encoding) {
+        bail!(
+            "Неизвестная кодировка: {}. Доступны: auto, {}",
+            settings.source_encoding,
+            FORCED_ENCODINGS.join(", ")
+        );
+    }
+    // Always applied: `auto` clears an override left by the previous run.
+    crate::localisation::set_source_encoding(&source_encoding);
+    // Always set, `None` included: a job without a budget must go back to the
+    // calculated one instead of inheriting the previous job's limit.
+    crate::pipeline::set_file_timeout(settings.file_timeout.map(|seconds| {
+        if seconds == 0 {
+            1_000_000_000.0
+        } else {
+            seconds as f64
+        }
+    }));
+
     if !is_supported_target(&settings.target) {
         let available: Vec<&str> = HOI4_TARGET_LANGS.iter().map(|(code, _)| *code).collect();
         bail!(
@@ -247,29 +279,28 @@ fn run_inner(settings: &JobSettings, sink: &Sink, stop: &AtomicBool) -> Result<J
                 settings.broken_lines
             )
         })?;
-    let engine = settings.engine.trim().to_string();
-    if !ENGINES.contains(&engine.as_str()) {
-        bail!(
-            "Неизвестный движок перевода: {engine}. Доступны: {}",
-            ENGINES.join(", ")
-        );
+    if settings.make_mod.is_some() && settings.dry_run {
+        bail!("Сборку мода нельзя совместить с проверкой: пробный прогон ничего не пишет");
     }
-    let api_key = settings
-        .api_key
-        .clone()
-        .or_else(|| std::env::var("DEEPL_API_KEY").ok())
-        .filter(|key| !key.is_empty());
-    if engine == "DeepL" && api_key.is_none() {
-        bail!("Для движка DeepL нужен ключ: укажите его в настройках или в DEEPL_API_KEY");
+    if let Some(spec) = &settings.make_mod {
+        if spec.install_dir.is_some() && !spec.install {
+            bail!("Папка установки без установки: мод некуда и незачем копировать");
+        }
+        if spec.install && spec.display_name.trim().is_empty() {
+            bail!("Имя мода для лаунчера не может быть пустым");
+        }
     }
-    if let Some(seconds) = settings.file_timeout {
-        let effective = if seconds == 0 {
-            1_000_000_000.0
-        } else {
-            seconds as f64
-        };
-        crate::pipeline::set_file_timeout(Some(effective));
-    }
+
+    // Everything about the mod is checked here, before a single line is
+    // translated: a typo in a folder name must not cost a full run.
+    let pack = match &settings.make_mod {
+        Some(spec) => {
+            let options = pack_options(settings, spec)?;
+            modpack::preflight(&options)?;
+            Some(options)
+        }
+        None => None,
+    };
 
     let files = collect_yml_files(&settings.src);
     if files.is_empty() {
@@ -316,6 +347,34 @@ fn run_inner(settings: &JobSettings, sink: &Sink, stop: &AtomicBool) -> Result<J
         });
     }
 
+    // The JAR-based engine of 1.4 is gone; an old script or a saved setting that
+    // still says JavaSim must keep working instead of failing on a name.
+    let engine = if settings.engine.trim() == "JavaSim" {
+        sink(JobEvent::Log {
+            level: "warning".to_string(),
+            message: "Движок JavaSim заменён встроенным HTTP-движком Google: \
+                      отдельный JAR больше не нужен."
+                .to_string(),
+        });
+        "Google".to_string()
+    } else {
+        settings.engine.trim().to_string()
+    };
+    if !ENGINES.contains(&engine.as_str()) {
+        bail!(
+            "Неизвестный движок перевода: {engine}. Доступны: {}",
+            ENGINES.join(", ")
+        );
+    }
+    let api_key = settings
+        .api_key
+        .clone()
+        .or_else(|| std::env::var("DEEPL_API_KEY").ok())
+        .filter(|key| !key.is_empty());
+    if engine == "DeepL" && api_key.is_none() {
+        bail!("Для движка DeepL нужен ключ: укажите его в настройках или в DEEPL_API_KEY");
+    }
+
     let mut log = logger(sink);
     let vanilla = build_vanilla_index(
         settings.vanilla.as_deref(),
@@ -345,6 +404,17 @@ fn run_inner(settings: &JobSettings, sink: &Sink, stop: &AtomicBool) -> Result<J
             &settings.dst,
         ))
     };
+
+    sink(JobEvent::Log {
+        level: "info".to_string(),
+        message: format!(
+            "Hoi4 Translator {} | {engine} | {} → {} | файлов: {}",
+            config::VERSION,
+            settings.source_lang,
+            settings.target,
+            files.len()
+        ),
+    });
 
     let mut written = 0usize;
     let mut failures = 0usize;
@@ -421,16 +491,29 @@ fn run_inner(settings: &JobSettings, sink: &Sink, stop: &AtomicBool) -> Result<J
         }
         if file_cancelled && stop.load(Ordering::SeqCst) {
             cancelled = true;
+            sink(JobEvent::Log {
+                level: "warning".to_string(),
+                message: "Остановлено пользователем: остальные файлы не тронуты".to_string(),
+            });
             break;
         }
     }
 
+    // Collected whether or not a report was asked for: the console prints the
+    // same numbers, and the log is the only place a user sees them in the window.
+    let fallbacks = translator.fallback_counts();
     let mut written_reports: Vec<String> = Vec::new();
     if let Some(report) = report.as_mut() {
-        report.set_fallbacks(translator.fallback_counts());
+        report.set_fallbacks(fallbacks.clone());
         for path in report.write(&settings.dst) {
             written_reports.push(path.display().to_string());
         }
+    }
+    for (pair, count) in &fallbacks {
+        sink(JobEvent::Log {
+            level: "info".to_string(),
+            message: format!("Фолбэк {pair}: {count} раз"),
+        });
     }
     sink(JobEvent::Log {
         level: "info".to_string(),
@@ -439,8 +522,10 @@ fn run_inner(settings: &JobSettings, sink: &Sink, stop: &AtomicBool) -> Result<J
 
     let mut module = None;
     let mut pack_failed = false;
-    if let Some(spec) = &settings.make_mod {
+    if let Some(options) = &pack {
         if failures > 0 {
+            // A mod with missing files is worse than no mod: the launcher shows
+            // it as a finished translation with holes in it.
             sink(JobEvent::Log {
                 level: "warning".to_string(),
                 message: format!(
@@ -449,45 +534,29 @@ fn run_inner(settings: &JobSettings, sink: &Sink, stop: &AtomicBool) -> Result<J
             });
             pack_failed = true;
         } else {
-            let folder = spec
-                .folder
-                .clone()
-                .unwrap_or_else(|| modpack::mod_folder_name(&spec.display_name, &settings.target));
-            let target_mod = match spec.target.as_deref() {
-                Some(path) => Some(modpack::read_target_descriptor(path)?),
-                None => None,
-            };
-            let options = modpack::ModPackOptions {
-                display_name: spec.display_name.clone(),
-                folder,
-                version: spec
-                    .version
-                    .clone()
-                    .unwrap_or_else(|| modpack::DEFAULT_MOD_VERSION.to_string()),
-                supported_version: spec
-                    .supported_version
-                    .clone()
-                    .or_else(|| {
-                        target_mod
-                            .as_ref()
-                            .and_then(|target| target.supported_version.clone())
-                    })
-                    .unwrap_or_else(|| modpack::DEFAULT_SUPPORTED_VERSION.to_string()),
-                dependency: target_mod.as_ref().and_then(|target| target.name.clone()),
-                tags: vec![modpack::DEFAULT_TAG.to_string()],
-                target_lang_code: settings.target.clone(),
-                source_dir: settings.dst.clone(),
-                output_dir: settings.dst.clone(),
-                install: spec.install,
-                install_dir: spec.install_dir.clone(),
-            };
-            modpack::preflight(&options)?;
             let mut log = logger(sink);
-            let built = modpack::build(&options, &mut log);
+            let built = modpack::build(options, &mut log);
             drop(log);
             match built {
                 Ok(result) => {
                     module = Some(result.folder.display().to_string());
+                    sink(JobEvent::Log {
+                        level: "info".to_string(),
+                        message: format!(
+                            "Мод собран: {} (файлов перевода: {})",
+                            result.folder.display(),
+                            result.files
+                        ),
+                    });
+                    if let Some(installed) = &result.installed {
+                        sink(JobEvent::Log {
+                            level: "info".to_string(),
+                            message: format!(
+                                "Установлен в папку игры: {}",
+                                installed.display()
+                            ),
+                        });
+                    }
                 }
                 Err(error) => {
                     sink(JobEvent::Log {
@@ -515,6 +584,56 @@ fn run_inner(settings: &JobSettings, sink: &Sink, stop: &AtomicBool) -> Result<J
         cancelled,
         code,
     })
+}
+
+/// Turn the window's mod form into the options the packer takes.
+fn pack_options(settings: &JobSettings, spec: &ModSpec) -> Result<modpack::ModPackOptions> {
+    let folder = spec
+        .folder
+        .clone()
+        .unwrap_or_else(|| modpack::mod_folder_name(&spec.display_name, &settings.target));
+    let target_mod = match spec.target.as_deref() {
+        Some(path) => Some(modpack::read_target_descriptor(path)?),
+        None => None,
+    };
+    Ok(modpack::ModPackOptions {
+        display_name: spec.display_name.clone(),
+        folder,
+        version: spec
+            .version
+            .clone()
+            .unwrap_or_else(|| modpack::DEFAULT_MOD_VERSION.to_string()),
+        supported_version: spec
+            .supported_version
+            .clone()
+            .or_else(|| {
+                target_mod
+                    .as_ref()
+                    .and_then(|target| target.supported_version.clone())
+            })
+            .unwrap_or_else(|| modpack::DEFAULT_SUPPORTED_VERSION.to_string()),
+        dependency: target_mod.as_ref().and_then(|target| target.name.clone()),
+        tags: vec![modpack::DEFAULT_TAG.to_string()],
+        target_lang_code: settings.target.clone(),
+        source_dir: settings.dst.clone(),
+        output_dir: settings.dst.clone(),
+        install: spec.install,
+        install_dir: spec.install_dir.clone(),
+    })
+}
+
+/// What `--cache-stats` shows, as lines the window can print verbatim.
+pub fn cache_stats() -> Result<Vec<String>> {
+    let path = config::cache_file();
+    let cache = TranslationCache::open(&path).context("не удалось открыть кэш переводов")?;
+    Ok(TranslationCache::describe(&path, &cache.stats()))
+}
+
+/// Empty the translation cache; returns how many translations were dropped.
+pub fn clear_cache() -> Result<usize> {
+    let path = config::cache_file();
+    let cache = TranslationCache::open(&path).context("не удалось открыть кэш переводов")?;
+    Ok(cache.clear(None, None, None))
 }
 
 fn relative_display(path: &Path, root: &Path) -> String {
@@ -599,7 +718,8 @@ mod tests {
         // Byte for byte what `settingsFromForm` in `assets/gui/index.html`
         // sends, so a renamed field fails here instead of in the window.
         let plain = r#"{"src":"C:\\mods\\MyMod","dst":"C:\\mods\\MyMod-ru","target":"ru",
-            "source_lang":"en","engine":"Google","api_key":null,"glossary":null,
+            "source_lang":"en","engine":"Google","source_encoding":"auto",
+            "api_key":null,"glossary":null,
             "vanilla":null,"concurrency":15,"skip_translated":false,
             "broken_lines":"reject","dry_run":false,"no_report":false,
             "file_timeout":null,"make_mod":null}"#;
@@ -607,11 +727,13 @@ mod tests {
         assert_eq!(settings.target, "ru");
         assert_eq!(settings.concurrency, 15);
         assert_eq!(settings.broken_lines, "reject");
+        assert_eq!(settings.source_encoding, "auto");
         assert!(settings.api_key.is_none());
         assert!(settings.make_mod.is_none());
 
         let with_mod = r#"{"src":"/mods/MyMod","dst":"/mods/MyMod-ru","target":"ru",
-            "source_lang":"en","engine":"DeepL","api_key":"key","glossary":null,
+            "source_lang":"en","engine":"DeepL","source_encoding":"cp1251",
+            "api_key":"key","glossary":null,
             "vanilla":null,"concurrency":4,"skip_translated":true,
             "broken_lines":"keep-original","dry_run":false,"no_report":true,
             "file_timeout":0,"make_mod":{"display_name":"Мой мод","folder":null,
@@ -621,8 +743,74 @@ mod tests {
         let spec = settings.make_mod.expect("mod spec");
         assert_eq!(spec.display_name, "Мой мод");
         assert_eq!(spec.version.as_deref(), Some("2.0.0"));
+        assert_eq!(settings.source_encoding, "cp1251");
         assert!(spec.install);
         assert_eq!(settings.file_timeout, Some(0));
+    }
+
+    #[test]
+    fn an_unknown_source_encoding_is_a_usage_error() {
+        // Only the refusal is tested: a valid value would leak into every other
+        // test through the process-wide override.
+        let (sink, events) = collect_events();
+        let stop = AtomicBool::new(false);
+        let settings = JobSettings {
+            src: PathBuf::from("."),
+            source_encoding: "koi8-r".to_string(),
+            ..JobSettings::default()
+        };
+        assert_eq!(run(&settings, &sink, &stop).code, 2);
+        let events = events.lock().expect("events");
+        match events.first() {
+            Some(JobEvent::Failed { message, code }) => {
+                assert_eq!(*code, 2);
+                assert!(message.contains("кодировк"), "{message}");
+            }
+            other => panic!("expected a failure event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_mod_build_and_a_dry_run_are_refused_together() {
+        let (sink, _events) = collect_events();
+        let stop = AtomicBool::new(false);
+        let settings = JobSettings {
+            src: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/demo-mod"),
+            dst: std::env::temp_dir().join("hoi4-job-pack-dry"),
+            dry_run: true,
+            make_mod: Some(ModSpec {
+                display_name: "Мод".to_string(),
+                ..ModSpec::default()
+            }),
+            ..JobSettings::default()
+        };
+        assert_eq!(run(&settings, &sink, &stop).code, 2);
+    }
+
+    #[test]
+    fn the_mod_is_checked_before_a_single_file_is_translated() {
+        // The console checks the mod first so that a typo in a folder name does
+        // not cost a full run; the window must behave the same way.
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let (sink, events) = collect_events();
+        let stop = AtomicBool::new(false);
+        let settings = JobSettings {
+            src: repo.join("examples").join("demo-mod"),
+            dst: std::env::temp_dir().join("hoi4-job-pack-order"),
+            make_mod: Some(ModSpec {
+                display_name: "   ".to_string(),
+                ..ModSpec::default()
+            }),
+            ..JobSettings::default()
+        };
+        assert_eq!(run(&settings, &sink, &stop).code, 2);
+        let events = events.lock().expect("events");
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, JobEvent::FileStart { .. })),
+            "no file may be started when the mod settings are wrong"
+        );
     }
 
     #[test]

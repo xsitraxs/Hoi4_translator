@@ -139,6 +139,9 @@
         <label><span>Язык перевода</span><select id="target"></select></label>
         <label><span>Язык оригинала</span><select id="source_lang"></select></label>
       </div>
+      <label><span>Кодировка исходников</span><select id="source_encoding"></select></label>
+      <p class="hint">Кодировку меняйте только если автоопределение ошиблось: файл без BOM из
+        немецкого или польского мода похож на cp1251.</p>
       <p class="hint">Исходники и результат должны лежать в разных папках, иначе файлы перезапишут себя.</p>
     </section>
 
@@ -162,6 +165,15 @@
       <label><span>Битые строки</span><select id="broken_lines"></select></label>
       <div class="check"><input type="checkbox" id="skip_translated"><span>Пропускать уже переведённые</span></div>
       <div class="check"><input type="checkbox" id="no_report"><span>Не писать отчёт</span></div>
+    </section>
+
+    <section>
+      <h2>Кэш переводов</h2>
+      <div class="actions">
+        <button id="cache-stats">Статистика</button>
+        <button id="cache-clear" class="danger">Очистить</button>
+      </div>
+      <p class="hint">Кэш общий с консольной версией: одинаковые строки не переводятся дважды.</p>
     </section>
 
     <section>
@@ -212,8 +224,16 @@
 </footer>
 
 <script>
-const token = new URLSearchParams(location.search).get("token") || "";
-const SOURCE_LANGS = ["en", "de", "fr", "es", "pl", "it", "ja", "zh", "pt", "tr", "cs", "nl"];
+// The token is the password to this window. It arrives in the address, which
+// means it would sit in the history and could leak through `Referer`; the server
+// also sends `Referrer-Policy: no-referrer`, and here the address is cleaned up
+// while the token moves to `sessionStorage`, so a reload still works.
+const storedToken = (() => {
+  try { return sessionStorage.getItem("hoi4-token"); } catch (error) { return null; }
+})();
+const token = new URLSearchParams(location.search).get("token") || storedToken || "";
+try { sessionStorage.setItem("hoi4-token", token); } catch (error) { /* приватный режим */ }
+if (location.search) history.replaceState(null, "", location.pathname);
 const STATUS_LABELS = {
   written: "записан", rejected: "отклонён", error: "ошибка", cancelled: "отменён"
 };
@@ -242,6 +262,7 @@ function settingsFromForm(dryRun) {
     target: $("target").value,
     source_lang: $("source_lang").value,
     engine: $("engine").value,
+    source_encoding: $("source_encoding").value,
     api_key: text("api_key") === "" ? null : text("api_key"),
     glossary: path("glossary"),
     vanilla: path("vanilla"),
@@ -265,9 +286,9 @@ function settingsFromForm(dryRun) {
 
 function saveSettings() {
   const state = {};
-  for (const id of ["src", "dst", "target", "source_lang", "engine", "glossary", "vanilla",
-    "concurrency", "file_timeout", "broken_lines", "mod_name", "mod_folder", "mod_version",
-    "mod_target", "mod_install_dir"]) {
+  for (const id of ["src", "dst", "target", "source_lang", "source_encoding", "engine",
+    "glossary", "vanilla", "concurrency", "file_timeout", "broken_lines", "mod_name",
+    "mod_folder", "mod_version", "mod_target", "mod_install_dir"]) {
     state[id] = $(id).value;
   }
   for (const id of ["skip_translated", "no_report", "pack", "mod_install"]) {
@@ -298,8 +319,10 @@ async function loadMeta() {
 
   $("target").innerHTML = meta.targets
     .map((item) => `<option value="${item.code}">${item.name} (${item.code})</option>`).join("");
-  $("source_lang").innerHTML = SOURCE_LANGS
-    .map((code) => `<option value="${code}">${code}</option>`).join("");
+  $("source_lang").innerHTML = meta.source_langs
+    .map((item) => `<option value="${item.code}">${item.name} (${item.code})</option>`).join("");
+  $("source_encoding").innerHTML = meta.source_encodings
+    .map((value) => `<option value="${value}">${value}</option>`).join("");
   $("engine").innerHTML = meta.engines
     .map((name) => `<option value="${name}">${name}</option>`).join("");
   $("broken_lines").innerHTML = meta.broken_lines
@@ -445,7 +468,12 @@ async function start(dryRun) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(settings),
-  });
+  }).catch(() => null);
+  if (!response) {
+    appendLog("error", "Сервер не отвечает: запустите программу заново.");
+    setStatus("error", "нет связи");
+    return;
+  }
   if (!response.ok) {
     const reason = await response.json().catch(() => ({ error: String(response.status) }));
     appendLog("error", reason.error || "Не удалось запустить перевод.");
@@ -468,10 +496,33 @@ $("cancel").addEventListener("click", () => {
 });
 $("quit").addEventListener("click", async () => {
   await post("quit");
+  clearInterval(pollTimer);
   setStatus("", "сервер остановлен");
+  $("start").disabled = true;
+  $("dry").disabled = true;
+  $("cancel").disabled = true;
   appendLog("warning", "Сервер остановлен. Эту вкладку можно закрыть.");
 });
 $("clear-log").addEventListener("click", () => { $("log").innerHTML = ""; });
+$("cache-stats").addEventListener("click", async () => {
+  const response = await fetch(api("cache")).catch(() => null);
+  if (!response || !response.ok) {
+    appendLog("error", "Не удалось прочитать кэш переводов.");
+    return;
+  }
+  const data = await response.json();
+  for (const line of data.lines || []) appendLog("info", line);
+});
+$("cache-clear").addEventListener("click", async () => {
+  if (!confirm("Очистить кэш переводов? Эти строки придётся переводить заново.")) return;
+  const response = await fetch(api("cache/clear"), { method: "POST" }).catch(() => null);
+  if (!response || !response.ok) {
+    appendLog("error", "Не удалось очистить кэш переводов.");
+    return;
+  }
+  const data = await response.json();
+  appendLog("warning", `Из кэша удалено переводов: ${data.removed}`);
+});
 $("pack").addEventListener("change", () => {
   $("pack-fields").classList.toggle("hidden", !$("pack").checked);
   saveSettings();
@@ -487,9 +538,11 @@ for (const id of ["target", "source_lang", "engine", "broken_lines", "skip_trans
 
 loadMeta().then(restoreSettings).then(poll).catch((error) => {
   setStatus("error", "нет связи");
-  appendLog("error", `Не удалось получить настройки от сервера: ${error}`);
+  appendLog("error", String(error.message) === "401"
+    ? "Ключ доступа не подошёл: откройте адрес, который напечатала программа, ещё раз."
+    : `Не удалось получить настройки от сервера: ${error}`);
 });
-setInterval(poll, 700);
+const pollTimer = setInterval(poll, 700);
 </script>
 </body>
 </html>

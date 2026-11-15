@@ -98,15 +98,21 @@ hoi4-translator-gui --host 0.0.0.0  # expose the window to the network (default:
 ```
 
 * the same settings as the flags: folders, language, engine, DeepL key, glossary, vanilla, threads,
-  broken-line mode and the mod build;
+  broken-line mode, source encoding and the mod build;
 * "Check only" is `--dry-run`: parsing without internet and without writing;
 * per-file and per-line progress, a log with `info`/`warning`/`error` levels, a file list with statuses;
 * "Stop" ends the run after the current file — the report and the cache are still written, like Ctrl+C;
+* the "Stats" and "Clear" buttons read and empty the same cache as `--cache-stats`/`--clear-cache`;
 * settings are remembered in the browser (`localStorage`), the cache and the log are the same as the CLI's.
 
+The source-language list is the game's own (`HOI4_LANGUAGE_NAMES`), not an arbitrary set of engine
+codes: only what the game can read is worth translating.
+
 **Access token.** The address carries a random token; any request without it gets `401`. Treat the
-address as the password to the window. The server listens on `127.0.0.1` unless `--host` says
-otherwise, and "Close server" in the page footer (or Ctrl+C) ends it.
+address as the password to the window: the page moves the token into `sessionStorage` and clears the
+address bar, and the server sends `Referrer-Policy: no-referrer`, so following a link cannot leak it.
+The server listens on `127.0.0.1` unless `--host` says otherwise, and "Close server" in the page
+footer (or Ctrl+C) ends it.
 
 ## 🛠 Requirements
 

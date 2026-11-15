@@ -10,13 +10,14 @@ use std::sync::Once;
 
 use clap::{ArgAction, Parser};
 
-use crate::cache::TranslationCache;
+use crate::cache::{self, TranslationCache};
 use crate::config::{self, LogTag, MAX_CONCURRENCY};
 use crate::glossary::Glossary;
 use crate::inspect::{format_report, inspect_files};
 use crate::localisation::{
-    collect_yml_files, is_supported_target, rename_dst, set_source_encoding,
-    validate_directory_relationships, validate_output_path_collisions, HOI4_TARGET_LANGS,
+    collect_yml_files, is_forced_encoding, is_supported_target, rename_dst, set_source_encoding,
+    validate_directory_relationships, validate_output_path_collisions, FORCED_ENCODINGS,
+    HOI4_TARGET_LANGS,
 };
 use crate::modpack;
 use crate::pipeline::{self, process_file, BrokenLineMode, FileResult};
@@ -211,19 +212,8 @@ fn handle_cache_command(cli: &Cli) -> i32 {
         println!("Из кэша удалено переводов: {removed}");
     }
     if cli.cache_stats {
-        let stats = cache.stats();
-        println!("Кэш: {}", path.display());
-        println!("  переводов: {}", stats.get("total").copied().unwrap_or(0));
-        println!("  движков: {}", stats.get("engines").copied().unwrap_or(0));
-        println!(
-            "  файлов с сохранёнными исходниками: {}",
-            stats.get("files").copied().unwrap_or(0)
-        );
-        if let Ok(metadata) = std::fs::metadata(&path) {
-            println!(
-                "  размер: {:.1} МБ",
-                metadata.len() as f64 / (1024.0 * 1024.0)
-            );
+        for line in cache::describe(&path, &cache.stats()) {
+            println!("{line}");
         }
     }
     0
@@ -235,19 +225,15 @@ pub fn run(cli: Cli) -> i32 {
         return handle_cache_command(&cli);
     }
     let source_encoding = cli.source_encoding.trim().to_lowercase();
-    if !matches!(
-        source_encoding.as_str(),
-        "auto" | "utf-8" | "cp1251" | "cp1252" | "latin-1"
-    ) {
+    if source_encoding != "auto" && !is_forced_encoding(&source_encoding) {
         return fail(&format!(
-            "Неизвестная кодировка --source-encoding: {}. Доступны: auto, utf-8, cp1251, \
-             cp1252, latin-1",
-            cli.source_encoding
+            "Неизвестная кодировка --source-encoding: {}. Доступны: auto, {}",
+            cli.source_encoding,
+            FORCED_ENCODINGS.join(", ")
         ));
     }
-    if source_encoding != "auto" {
-        set_source_encoding(&source_encoding);
-    }
+    // Always set it: `auto` clears an override left by an earlier run.
+    set_source_encoding(&source_encoding);
     if let Some(seconds) = cli.file_timeout {
         // 0 means "no limit"; the pipeline works in wall-clock seconds.
         let effective = if seconds == 0 {

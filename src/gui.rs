@@ -24,7 +24,7 @@ use serde_json::{json, Value};
 
 use crate::config::{self, MAX_CONCURRENCY, VERSION};
 use crate::job::{self, JobEvent, JobSettings, Sink};
-use crate::localisation::HOI4_TARGET_LANGS;
+use crate::localisation::{FORCED_ENCODINGS, HOI4_LANGUAGE_NAMES, HOI4_TARGET_LANGS};
 use crate::pipeline::BROKEN_LINE_MODES;
 use crate::providers::ENGINES;
 
@@ -33,6 +33,10 @@ const INDEX_HTML: &str = include_str!("../assets/gui/index.html");
 
 /// Largest request body accepted; the settings JSON is a few hundred bytes.
 const MAX_BODY: usize = 256 * 1024;
+/// Largest single header line, and all headers together. A request from the page
+/// is a few hundred bytes; the cap only stops an endless line from growing memory.
+const MAX_HEADER_LINE: usize = 8 * 1024;
+const MAX_HEADERS: usize = 32 * 1024;
 /// Events kept for the page; older ones are dropped and the log says so.
 const MAX_EVENTS: usize = 20_000;
 /// How many events to drop at once when the buffer is full.
@@ -178,9 +182,17 @@ fn meta() -> Value {
         .iter()
         .map(|(mode, label)| json!({ "value": job::broken_lines_value(*mode), "label": label }))
         .collect();
+    let source_langs: Vec<Value> = HOI4_LANGUAGE_NAMES
+        .iter()
+        .map(|(code, name)| json!({ "code": code, "name": name }))
+        .collect();
+    let mut source_encodings = vec![json!("auto")];
+    source_encodings.extend(FORCED_ENCODINGS.iter().map(|value| json!(value)));
     json!({
         "version": VERSION,
         "targets": targets,
+        "source_langs": source_langs,
+        "source_encodings": source_encodings,
         "engines": ENGINES,
         "broken_lines": broken_lines,
         "concurrency": config::DEFAULT_CONCURRENCY,
@@ -198,7 +210,17 @@ fn spawn_run(shared: Arc<Shared>, settings: JobSettings) {
     };
     std::thread::spawn(move || {
         // The event stream already carries the result; this only closes the gate.
-        job::run(&settings, &sink, &shared.stop);
+        // A panic is caught because the gate has to close anyway: without this a
+        // single bug would leave the window saying "working" until it is closed.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            job::run(&settings, &sink, &shared.stop)
+        }));
+        if outcome.is_err() {
+            shared.push(JobEvent::Failed {
+                message: "Прогон упал: подробности в консоли и в журнале программы".to_string(),
+                code: 1,
+            });
+        }
         shared.finish();
     });
 }
@@ -240,6 +262,14 @@ pub fn route(state: &AppState, method: &str, target: &str, body: &str) -> Respon
                 }
             }
         }
+        ("GET", "/api/cache") => match job::cache_stats() {
+            Ok(lines) => Response::json(200, &json!({ "lines": lines })),
+            Err(error) => Response::error(500, &error.to_string()),
+        },
+        ("POST", "/api/cache/clear") => match job::clear_cache() {
+            Ok(removed) => Response::json(200, &json!({ "removed": removed })),
+            Err(error) => Response::error(500, &error.to_string()),
+        },
         ("POST", "/api/cancel") => {
             state.shared.stop.store(true, Ordering::SeqCst);
             Response::json(200, &json!({ "ok": true }))
@@ -387,21 +417,29 @@ fn handle(mut stream: TcpStream, state: &AppState) -> Result<()> {
     let _ = stream.set_write_timeout(Some(Duration::from_secs(15)));
     let mut reader = BufReader::new(stream.try_clone().context("копия сокета")?);
 
-    let mut request_line = String::new();
-    if reader.read_line(&mut request_line)? == 0 {
-        return Ok(());
-    }
+    let too_long = Response::text(431, "Слишком длинный запрос: заголовки ограничены");
+    let request_line = match read_header_line(&mut reader, MAX_HEADER_LINE) {
+        Ok(Some(line)) => line,
+        Ok(None) => return Ok(()),
+        Err(_) => return write_response(&mut stream, &too_long),
+    };
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("").to_string();
     let target = parts.next().unwrap_or("/").to_string();
 
     let mut content_length = 0usize;
+    let mut header_bytes = request_line.len();
     loop {
-        let mut header = String::new();
-        if reader.read_line(&mut header)? == 0 {
-            break;
+        let line = match read_header_line(&mut reader, MAX_HEADER_LINE) {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(_) => return write_response(&mut stream, &too_long),
+        };
+        header_bytes += line.len();
+        if header_bytes > MAX_HEADERS {
+            return write_response(&mut stream, &too_long);
         }
-        let header = header.trim_end();
+        let header = line.trim_end();
         if header.is_empty() {
             break;
         }
@@ -422,23 +460,60 @@ fn handle(mut stream: TcpStream, state: &AppState) -> Result<()> {
     write_response(&mut stream, &response)
 }
 
-fn write_response(stream: &mut TcpStream, response: &Response) -> Result<()> {
+/// Response head: status, type, length and the headers that keep the token and
+/// the page private.
+///
+/// `Referrer-Policy` matters most here: the token lives in the address, and a
+/// browser that followed any link would otherwise send it in `Referer`. The
+/// policy is a header, so a page that was never opened cannot weaken it.
+fn header_block(response: &Response) -> String {
     let reason = match response.status {
         200 => "OK",
         400 => "Bad Request",
         401 => "Unauthorized",
         404 => "Not Found",
         409 => "Conflict",
+        431 => "Request Header Fields Too Large",
+        500 => "Internal Server Error",
         _ => "Error",
     };
-    let head = format!(
+    format!(
         "HTTP/1.1 {} {reason}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
          Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\
+         Referrer-Policy: no-referrer\r\n\
+         Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; \
+         script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; \
+         base-uri 'none'; form-action 'none'\r\n\
          Connection: close\r\n\r\n",
         response.status,
         response.content_type,
         response.body.len()
-    );
+    )
+}
+
+/// Read one line, but never more than `limit` bytes.
+///
+/// `BufRead::read_line` grows a `String` until it finds a newline, so a client
+/// that never sends one could ask for unlimited memory. The limit is applied to
+/// the read itself, and a line that fills the budget without ending is refused
+/// instead of being stitched together from pieces.
+fn read_header_line(reader: &mut impl BufRead, limit: usize) -> std::io::Result<Option<String>> {
+    let mut line = String::new();
+    let read = reader.by_ref().take(limit as u64).read_line(&mut line)?;
+    if read == 0 {
+        return Ok(None);
+    }
+    if !line.ends_with('\n') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "строка заголовка не закончилась",
+        ));
+    }
+    Ok(Some(line))
+}
+
+fn write_response(stream: &mut TcpStream, response: &Response) -> Result<()> {
+    let head = header_block(response);
     stream.write_all(head.as_bytes())?;
     stream.write_all(response.body.as_bytes())?;
     stream.flush()?;
@@ -507,6 +582,15 @@ mod tests {
         assert!(targets.iter().any(|target| target["code"] == "ru"));
         let engines = value["engines"].as_array().expect("engines");
         assert!(engines.iter().any(|engine| engine == "Google"));
+        let sources = value["source_langs"].as_array().expect("source_langs");
+        assert!(sources.iter().any(|item| item["code"] == "en"));
+        assert!(
+            sources.iter().all(|item| item["code"] != "it"),
+            "the page may only offer languages the game actually ships"
+        );
+        let encodings = value["source_encodings"].as_array().expect("encodings");
+        assert_eq!(encodings.first(), Some(&json!("auto")));
+        assert!(encodings.iter().any(|value| value == "cp1251"));
         let modes = value["broken_lines"].as_array().expect("modes");
         assert!(modes.iter().any(|mode| mode["value"] == "reject"));
         assert_eq!(value["version"], json!(VERSION));
@@ -587,6 +671,45 @@ mod tests {
             "{response}"
         );
         assert!(response.contains("\"engines\""), "{response}");
+        let _ = worker.join();
+    }
+
+    #[test]
+    fn the_response_keeps_the_token_out_of_referer() {
+        let head = header_block(&Response::html("<html></html>"));
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+        assert!(head.contains("Referrer-Policy: no-referrer"), "{head}");
+        assert!(head.contains("default-src 'none'"), "{head}");
+        assert!(head.contains("Content-Type: text/html"), "{head}");
+        assert!(head.contains("Content-Length: 13"), "{head}");
+        assert_eq!(
+            header_block(&Response::error(431, "x")).lines().next(),
+            Some("HTTP/1.1 431 Request Header Fields Too Large")
+        );
+    }
+
+    #[test]
+    fn an_endless_header_line_is_refused_instead_of_buffered() {
+        let state = state();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("listen");
+        let address = listener.local_addr().expect("address");
+        let worker = std::thread::spawn(move || {
+            let (stream, _peer) = listener.accept().expect("accept");
+            let _ = handle(stream, &state);
+        });
+
+        let mut client = TcpStream::connect(address).expect("connect");
+        client
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("timeout");
+        let mut request = String::from("GET / HTTP/1.1\r\nX-Endless: ");
+        request.push_str(&"a".repeat(MAX_HEADER_LINE + 16));
+        request.push_str("\r\n\r\n");
+        client.write_all(request.as_bytes()).expect("write");
+        let mut response = String::new();
+        client.read_to_string(&mut response).expect("read");
+
+        assert!(response.starts_with("HTTP/1.1 431"), "{response}");
         let _ = worker.join();
     }
 

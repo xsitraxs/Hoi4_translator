@@ -242,6 +242,35 @@ impl TranslationCache {
         removed
     }
 
+    /// Human-readable summary of the cache, one fact per line.
+    ///
+    /// Shared by `--cache-stats` and the window: the same numbers must not be
+    /// described twice in two different ways.
+    pub fn describe(path: &Path, stats: &BTreeMap<&'static str, usize>) -> Vec<String> {
+        let mut lines = vec![
+            format!("Кэш: {}", path.display()),
+            format!(
+                "  переводов: {}",
+                stats.get("total").copied().unwrap_or(0)
+            ),
+            format!(
+                "  движков: {}",
+                stats.get("engines").copied().unwrap_or(0)
+            ),
+            format!(
+                "  файлов с сохранёнными исходниками: {}",
+                stats.get("files").copied().unwrap_or(0)
+            ),
+        ];
+        if let Ok(metadata) = std::fs::metadata(path) {
+            lines.push(format!(
+                "  размер: {:.1} МБ",
+                metadata.len() as f64 / (1024.0 * 1024.0)
+            ));
+        }
+        lines
+    }
+
     pub fn stats(&self) -> BTreeMap<&'static str, usize> {
         let connection = self.connection();
         let total: usize = connection
@@ -322,6 +351,21 @@ mod tests {
 
         cache.forget_file(dst);
         assert!(cache.get_source_hashes(dst).is_empty());
+    }
+
+    #[test]
+    fn the_summary_describes_the_same_facts_the_console_prints() {
+        let mut stats = BTreeMap::new();
+        stats.insert("total", 42usize);
+        stats.insert("engines", 3usize);
+        stats.insert("files", 7usize);
+        // A path that does not exist: the size line must simply be absent.
+        let lines = TranslationCache::describe(Path::new("/no/such/cache.db"), &stats);
+        assert_eq!(lines.len(), 4);
+        assert!(lines[0].starts_with("Кэш: "));
+        assert!(lines[1].contains("42"));
+        assert!(lines[2].contains('3'));
+        assert!(lines[3].contains('7'));
     }
 
     #[test]
