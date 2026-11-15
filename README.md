@@ -84,6 +84,7 @@ l_russian:
 | `src/pipeline.rs` | обработка одного файла: перевод, проверка, запись |
 | `src/inspect.rs` | проверка файлов без перевода (`--dry-run`) |
 | `src/report.rs` | машинный отчёт о прогоне (`json`/`csv`) |
+| `src/modpack.rs` | сборка готового мода: папка, `descriptor.mod`, `.mod`, установка |
 | `src/cli.rs`, `src/main.rs` | аргументы, коды возврата, прогон |
 
 Тесты: `cargo test` (юнит-тесты в модулях + интеграционные в `tests/`).
@@ -134,9 +135,12 @@ hoi4-translator --src examples/demo-mod --dst /tmp/out --target ru --dry-run
 | `--vanilla DIR` | папка `localisation` игры — переиспользовать официальные переводы |
 | `--skip-translated` | не переводить то, что уже переведено в папке результата |
 | `--broken-lines reject\|keep-original` | что делать со строкой, сломавшей формат |
-| `--concurrency N` | параллельных запросов (по умолчанию 15) |
+| `--concurrency N` | параллельных запросов на файл (по умолчанию 15, не больше 64) |
 | `--no-report` | не создавать JSON/CSV отчёт |
+| `--file-timeout SECONDS` | предел перевода одного файла (0 — без предела) |
 | `--quiet` | только итог, без строк файлов |
+| `--cache-stats` | показать, что лежит в кэше переводов, и выйти |
+| `--clear-cache` | очистить кэш переводов и выйти |
 | `--dry-run` | только разбор файлов, без перевода и записи |
 | `--make-mod NAME` | собрать готовый мод: папка, `descriptor.mod`, `.mod` (см. [`docs/MAKE-A-TRANSLATED-MOD.md`](docs/MAKE-A-TRANSLATED-MOD.md)) |
 | `--mod-folder NAME` | имя папки и `.mod`-файла (латиница без пробелов) |
@@ -144,6 +148,7 @@ hoi4-translator --src examples/demo-mod --dst /tmp/out --target ru --dry-run
 | `--mod-version X.Y.Z` | версия мода перевода (по умолчанию 1.0.0) |
 | `--mod-supported-version X.Y.*` | `supported_version` в дескрипторе |
 | `--install` | скопировать готовый мод в папку модов игры |
+| `--install-dir DIR` | куда ставить мод вместо стандартной папки игры |
 
 Полный список: `hoi4-translator --help`.
 
@@ -153,7 +158,7 @@ hoi4-translator --src examples/demo-mod --dst /tmp/out --target ru --dry-run
 | --- | --- |
 | `0` | всё записано |
 | `1` | хотя бы один файл не записан (или `--dry-run` нашёл битые строки и дубликаты) |
-| `2` | ошибка аргументов или папок — перевод не начинался |
+| `2` | ошибка аргументов или папок — перевод не начинался (в том числе `--concurrency` больше 64, пустое имя `--make-mod`, `--install-dir` без `--install`) |
 
 Второй код удобно проверять в CI: неправильная папка не должна выглядеть как успешный прогон.
 

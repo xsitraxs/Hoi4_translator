@@ -5,10 +5,12 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Once;
 
 use clap::{ArgAction, Parser};
 
+use crate::cache::TranslationCache;
 use crate::config::{self, LogTag};
 use crate::glossary::Glossary;
 use crate::inspect::{format_report, inspect_files};
@@ -17,7 +19,7 @@ use crate::localisation::{
     validate_output_path_collisions, HOI4_TARGET_LANGS,
 };
 use crate::modpack;
-use crate::pipeline::{process_file, BrokenLineMode, FileResult};
+use crate::pipeline::{self, process_file, BrokenLineMode, FileResult};
 use crate::providers::ENGINES;
 use crate::report::RunReport;
 use crate::translation::Translator;
@@ -73,8 +75,8 @@ pub struct Cli {
     #[arg(long)]
     pub vanilla: Option<PathBuf>,
 
-    /// Параллельных запросов
-    #[arg(long, default_value_t = config::SEMAPHORE_LIMIT)]
+    /// Параллельных запросов (не больше 64)
+    #[arg(long, default_value_t = config::DEFAULT_CONCURRENCY)]
     pub concurrency: usize,
 
     /// Не переводить строки, уже переведённые в папке результата
@@ -97,9 +99,9 @@ pub struct Cli {
     #[arg(long = "mod-folder", value_name = "NAME")]
     pub mod_folder: Option<String>,
 
-    /// Версия мода перевода
-    #[arg(long = "mod-version", value_name = "X.Y.Z", default_value = "1.0.0")]
-    pub mod_version: String,
+    /// Версия мода перевода (по умолчанию 1.0.0)
+    #[arg(long = "mod-version", value_name = "X.Y.Z")]
+    pub mod_version: Option<String>,
 
     /// supported_version мода; по умолчанию из --mod-target или 1.*
     #[arg(long = "mod-supported-version", value_name = "X.Y.*")]
@@ -112,6 +114,22 @@ pub struct Cli {
     /// Скопировать готовый мод в папку модов игры
     #[arg(long, action = ArgAction::SetTrue)]
     pub install: bool,
+
+    /// Куда устанавливать мод вместо стандартной папки модов игры
+    #[arg(long = "install-dir", value_name = "DIR")]
+    pub install_dir: Option<PathBuf>,
+
+    /// Предел перевода одного файла в секундах; 0 — без предела
+    #[arg(long = "file-timeout", value_name = "SECONDS")]
+    pub file_timeout: Option<u64>,
+
+    /// Показать, что лежит в кэше переводов, и выйти
+    #[arg(long = "cache-stats", action = ArgAction::SetTrue)]
+    pub cache_stats: bool,
+
+    /// Очистить кэш переводов и выйти
+    #[arg(long = "clear-cache", action = ArgAction::SetTrue)]
+    pub clear_cache: bool,
 
     /// Только проверить файлы: разобрать, найти битые строки и дубликаты ключей
     #[arg(long = "dry-run", action = ArgAction::SetTrue)]
@@ -156,8 +174,73 @@ fn preflight_engine(engine: &str, api_key: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+/// A window and a command line can run at once, so the stop flag is process
+/// wide and set by the handler below.
+static STOP: AtomicBool = AtomicBool::new(false);
+
+/// Largest thread count one file may use. Each worker is an OS thread, and the
+/// engines rate-limit long before this, so more is only a way to hurt the machine.
+const MAX_CONCURRENCY: usize = 64;
+
+/// Ctrl+C stops the run after the line being translated: the report and the
+/// cache still get written. A second Ctrl+C terminates the process as usual.
+fn install_cancel_handler() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let installed = ctrlc::set_handler(|| {
+            STOP.store(true, Ordering::SeqCst);
+            eprintln!("Останавливаюсь после текущей строки (ещё один Ctrl+C — выйти сразу)");
+        });
+        if installed.is_err() {
+            log::warn!("Обработку Ctrl+C включить не удалось: прервать можно только закрытием процесса");
+        }
+    });
+}
+
+/// `--cache-stats` / `--clear-cache`: answer and leave, without touching a mod.
+fn handle_cache_command(cli: &Cli) -> i32 {
+    let path = config::cache_file();
+    let cache = match TranslationCache::open(&path) {
+        Ok(cache) => cache,
+        Err(error) => return fail(&format!("Не удалось открыть кэш переводов: {error}")),
+    };
+    if cli.clear_cache {
+        let removed = cache.clear(None, None, None);
+        println!("Из кэша удалено переводов: {removed}");
+    }
+    if cli.cache_stats {
+        let stats = cache.stats();
+        println!("Кэш: {}", path.display());
+        println!("  переводов: {}", stats.get("total").copied().unwrap_or(0));
+        println!("  движков: {}", stats.get("engines").copied().unwrap_or(0));
+        println!(
+            "  файлов с сохранёнными исходниками: {}",
+            stats.get("files").copied().unwrap_or(0)
+        );
+        if let Ok(metadata) = std::fs::metadata(&path) {
+            println!(
+                "  размер: {:.1} МБ",
+                metadata.len() as f64 / (1024.0 * 1024.0)
+            );
+        }
+    }
+    0
+}
+
 /// Entry point used by `main`; returns the process exit code.
 pub fn run(cli: Cli) -> i32 {
+    if cli.cache_stats || cli.clear_cache {
+        return handle_cache_command(&cli);
+    }
+    if let Some(seconds) = cli.file_timeout {
+        // 0 means "no limit"; the pipeline works in wall-clock seconds.
+        let effective = if seconds == 0 {
+            1_000_000_000.0
+        } else {
+            seconds as f64
+        };
+        pipeline::set_file_timeout(Some(effective));
+    }
     if !is_supported_target(&cli.target) {
         let available: Vec<&str> = HOI4_TARGET_LANGS.iter().map(|(code, _)| *code).collect();
         return fail(&format!(
@@ -178,17 +261,79 @@ pub fn run(cli: Cli) -> i32 {
     if cli.concurrency == 0 {
         return fail("Параллельных запросов должно быть не меньше одного: --concurrency N (N ≥ 1)");
     }
+    if cli.concurrency > MAX_CONCURRENCY {
+        return fail(&format!(
+            "--concurrency {}: не больше {MAX_CONCURRENCY} параллельных запросов на файл",
+            cli.concurrency
+        ));
+    }
     if cli.install && cli.make_mod.is_none() {
         return fail("--install без --make-mod \"Имя мода\": нечего устанавливать");
+    }
+    if cli.install_dir.is_some() && !cli.install {
+        return fail("--install-dir без --install: копировать мод некуда и незачем");
     }
     if cli.make_mod.is_some() && cli.dry_run {
         return fail("--make-mod нельзя совместить с --dry-run: пробный прогон ничего не пишет");
     }
-    let target_mod = match cli.mod_target.as_deref() {
-        Some(path) => match modpack::read_target_descriptor(path) {
-            Ok(target) => Some(target),
-            Err(error) => return fail(&error.to_string()),
-        },
+    if cli.make_mod.is_none() {
+        for (given, flag) in [
+            (cli.mod_folder.is_some(), "--mod-folder"),
+            (cli.mod_version.is_some(), "--mod-version"),
+            (cli.mod_supported_version.is_some(), "--mod-supported-version"),
+            (cli.mod_target.is_some(), "--mod-target"),
+        ] {
+            if given {
+                eprintln!("{flag} без --make-mod ничего не делает: ключ проигнорирован");
+            }
+        }
+    }
+
+    // Everything about the mod is checked here, before a single line is
+    // translated: a typo in a folder name must not cost a full run.
+    let pack = match cli.make_mod.as_deref() {
+        Some(display_name) => {
+            let folder = cli
+                .mod_folder
+                .clone()
+                .unwrap_or_else(|| modpack::mod_folder_name(display_name, &cli.target));
+            let target_mod = match cli.mod_target.as_deref() {
+                Some(path) => match modpack::read_target_descriptor(path) {
+                    Ok(target) => Some(target),
+                    Err(error) => return fail(&error.to_string()),
+                },
+                None => None,
+            };
+            let supported_version = cli
+                .mod_supported_version
+                .clone()
+                .or_else(|| {
+                    target_mod
+                        .as_ref()
+                        .and_then(|target| target.supported_version.clone())
+                })
+                .unwrap_or_else(|| modpack::DEFAULT_SUPPORTED_VERSION.to_string());
+            let options = modpack::ModPackOptions {
+                display_name: display_name.to_string(),
+                folder,
+                version: cli
+                    .mod_version
+                    .clone()
+                    .unwrap_or_else(|| modpack::DEFAULT_MOD_VERSION.to_string()),
+                supported_version,
+                dependency: target_mod.as_ref().and_then(|target| target.name.clone()),
+                tags: vec![modpack::DEFAULT_TAG.to_string()],
+                target_lang_code: cli.target.clone(),
+                source_dir: cli.dst.clone(),
+                output_dir: cli.dst.clone(),
+                install: cli.install,
+                install_dir: cli.install_dir.clone(),
+            };
+            if let Err(error) = modpack::preflight(&options) {
+                return fail(&error.to_string());
+            }
+            Some(options)
+        }
         None => None,
     };
 
@@ -330,7 +475,7 @@ pub fn run(cli: Cli) -> i32 {
         ))
     };
 
-    let stop = AtomicBool::new(false);
+    install_cancel_handler();
     let mut failures = 0usize;
     let mut written = 0usize;
 
@@ -349,7 +494,7 @@ pub fn run(cli: Cli) -> i32 {
             &translator,
             &mut log_callback,
             cli.skip_translated,
-            &stop,
+            &STOP,
             &cli.target,
             None,
             mode,
@@ -374,10 +519,18 @@ pub fn run(cli: Cli) -> i32 {
             );
         }
 
+        let cancelled = matches!(outcome.result, Some(FileResult::Cancelled));
         match outcome.result {
             Some(FileResult::Written(_)) => written += 1,
             Some(FileResult::PreviewCancelled) => {}
             _ => failures += 1,
+        }
+        if cancelled && STOP.load(Ordering::SeqCst) {
+            log_callback(
+                "Остановлено пользователем: остальные файлы не тронуты",
+                LogTag::Warning,
+            );
+            break;
         }
     }
 
@@ -396,64 +549,51 @@ pub fn run(cli: Cli) -> i32 {
     }
 
     let mut pack_failed = false;
-    if let Some(display_name) = cli.make_mod.clone() {
-        let folder = cli
-            .mod_folder
-            .clone()
-            .unwrap_or_else(|| modpack::mod_folder_name(&display_name, &cli.target));
-        let supported_version = cli
-            .mod_supported_version
-            .clone()
-            .or_else(|| {
-                target_mod
-                    .as_ref()
-                    .and_then(|target| target.supported_version.clone())
-            })
-            .unwrap_or_else(|| modpack::DEFAULT_SUPPORTED_VERSION.to_string());
-        let dependency = target_mod.as_ref().and_then(|target| target.name.clone());
-        let options = modpack::ModPackOptions {
-            display_name: display_name.clone(),
-            folder: folder.clone(),
-            version: cli.mod_version.clone(),
-            supported_version,
-            dependency: dependency.clone(),
-            tags: vec![modpack::DEFAULT_TAG.to_string()],
-            target_lang_code: cli.target.clone(),
-            source_dir: cli.dst.clone(),
-            output_dir: cli.dst.clone(),
-            install: cli.install,
-        };
-        match modpack::build(&options, &mut log_callback) {
-            Ok(result) => {
-                println!(
-                    "Мод собран: {} (файлов перевода: {})",
-                    result.folder.display(),
-                    result.files
-                );
-                println!("Описание для лаунчера: {}", result.mod_file.display());
-                if let Some(installed) = &result.installed {
-                    println!("Установлен в папку игры: {}", installed.display());
-                } else {
+    if let Some(options) = &pack {
+        if failures > 0 {
+            // A mod with missing files is worse than no mod: the launcher shows
+            // it as a finished translation with holes in it.
+            log_callback(
+                &format!(
+                    "  Мод не собран: файлов с ошибками — {failures}. Исправьте их и \
+                     запустите сборку ещё раз"
+                ),
+                LogTag::Warning,
+            );
+            pack_failed = true;
+        } else {
+            match modpack::build(options, &mut log_callback) {
+                Ok(result) => {
                     println!(
-                        "Скопируйте {} и {} в папку модов игры (или добавьте --install)",
+                        "Мод собран: {} (файлов перевода: {})",
                         result.folder.display(),
-                        result
-                            .mod_file
-                            .file_name()
-                            .map(|name| name.to_string_lossy().to_string())
-                            .unwrap_or_default()
+                        result.files
                     );
-                }
-                match &dependency {
-                    Some(dependency) => println!("Зависимость (мод-цель): {dependency}"),
-                    None => {
-                        println!("Мод-цель не указан (--mod-target): перевод ляжет поверх ванили")
+                    println!("Описание для лаунчера: {}", result.mod_file.display());
+                    if let Some(installed) = &result.installed {
+                        println!("Установлен в папку игры: {}", installed.display());
+                    } else {
+                        println!(
+                            "Скопируйте {} и {} в папку модов игры (или добавьте --install)",
+                            result.folder.display(),
+                            result
+                                .mod_file
+                                .file_name()
+                                .map(|name| name.to_string_lossy().to_string())
+                                .unwrap_or_default()
+                        );
+                    }
+                    match &options.dependency {
+                        Some(dependency) => println!("Зависимость (мод-цель): {dependency}"),
+                        None => println!(
+                            "Мод-цель не указан (--mod-target): перевод ляжет поверх ванили"
+                        ),
                     }
                 }
-            }
-            Err(error) => {
-                log_callback(&format!("  Не удалось собрать мод: {error}"), LogTag::Error);
-                pack_failed = true;
+                Err(error) => {
+                    log_callback(&format!("  Не удалось собрать мод: {error}"), LogTag::Error);
+                    pack_failed = true;
+                }
             }
         }
     }
@@ -549,13 +689,53 @@ mod tests {
             "1.15.*",
         ]);
         assert_eq!(cli.make_mod.as_deref(), Some("MyMod — русский"));
-        assert_eq!(cli.mod_version, "2.0.0");
+        assert_eq!(cli.mod_version.as_deref(), Some("2.0.0"));
         assert_eq!(cli.mod_supported_version.as_deref(), Some("1.15.*"));
+        // The language marker is what keeps the translation from replacing the
+        // mod it translates.
         assert_eq!(
             modpack::mod_folder_name(cli.make_mod.as_deref().unwrap_or_default(), &cli.target),
-            "MyMod"
+            "MyMod_ru"
         );
         assert!(!cli.install);
+    }
+
+    #[test]
+    fn a_broken_mod_folder_name_is_refused_before_any_translation() {
+        // A space can only come from --mod-folder here, and the pre-flight
+        // catches it: no engine is ever called.
+        assert_eq!(
+            run(pack_cli(&["--make-mod", "MyMod", "--mod-folder", "my mod"])),
+            2
+        );
+        assert_eq!(run(pack_cli(&["--make-mod", "   "])), 2);
+    }
+
+    #[test]
+    fn too_many_workers_are_refused() {
+        assert_eq!(run(pack_cli(&["--concurrency", "1000"])), 2);
+    }
+
+    #[test]
+    fn an_install_directory_without_install_is_a_usage_error() {
+        assert_eq!(
+            run(pack_cli(&[
+                "--make-mod",
+                "MyMod",
+                "--install-dir",
+                "/tmp/mods"
+            ])),
+            2
+        );
+    }
+
+    #[test]
+    fn the_cache_commands_are_parsed() {
+        // Running them here would clear the cache of whoever runs `cargo test`,
+        // so only the wiring is checked.
+        let cli = pack_cli(&["--cache-stats", "--clear-cache"]);
+        assert!(cli.cache_stats);
+        assert!(cli.clear_cache);
     }
 
     #[test]

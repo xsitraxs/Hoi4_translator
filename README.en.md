@@ -112,9 +112,12 @@ hoi4-translator --src examples/demo-mod --dst /tmp/out --target ru --dry-run
 | `--vanilla DIR` | the game's `localisation` folder, to reuse official translations |
 | `--skip-translated` | do not translate lines already translated in the output folder |
 | `--broken-lines reject\|keep-original` | what to do with a line that breaks the format |
-| `--concurrency N` | parallel requests (15 by default) |
+| `--concurrency N` | parallel requests per file (15 by default, at most 64) |
 | `--no-report` | skip the JSON/CSV report |
+| `--file-timeout SECONDS` | per-file translation budget (0 — no limit) |
 | `--quiet` | final summary only |
+| `--cache-stats` | print what the translation cache holds and exit |
+| `--clear-cache` | empty the translation cache and exit |
 | `--dry-run` | parse and report only, nothing translated or written |
 | `--make-mod NAME` | build the finished mod: folder, `descriptor.mod`, `.mod` (see [`docs/MAKE-A-TRANSLATED-MOD.md`](docs/MAKE-A-TRANSLATED-MOD.md)) |
 | `--mod-folder NAME` | folder and `.mod` file name (ASCII, no spaces) |
@@ -122,9 +125,12 @@ hoi4-translator --src examples/demo-mod --dst /tmp/out --target ru --dry-run
 | `--mod-version X.Y.Z` | version of the translation mod (default 1.0.0) |
 | `--mod-supported-version X.Y.*` | `supported_version` written into the descriptor |
 | `--install` | copy the finished mod into the game's mods folder |
+| `--install-dir DIR` | put the mod somewhere other than the default mods folder |
 
 Exit codes: `0` — everything written; `1` — at least one file was not written (or `--dry-run`
-found blocking problems); `2` — bad arguments or folders, nothing was started.
+found blocking problems, or `--make-mod` had to skip the build); `2` — bad arguments or folders
+(including `--concurrency` above 64, an empty `--make-mod` name, `--install-dir` without
+`--install`), nothing was started.
 
 ## 📁 Choosing folders
 

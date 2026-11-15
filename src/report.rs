@@ -234,7 +234,12 @@ impl RunReport {
     /// run it describes.
     pub fn write(&self, directory: &Path) -> Vec<PathBuf> {
         let mut written = Vec::new();
-        if directory.as_os_str().is_empty() || !directory.is_dir() {
+        if directory.as_os_str().is_empty() {
+            log::warn!("Отчёт не записан: не указан каталог результата");
+            return written;
+        }
+        if !directory.is_dir() && std::fs::create_dir_all(directory).is_err() {
+            // Every file may have been rejected, so the folder never appeared.
             log::warn!("Отчёт не записан: нет каталога {}", directory.display());
             return written;
         }

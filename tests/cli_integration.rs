@@ -51,10 +51,14 @@ fn base_cli(src: PathBuf, dst: PathBuf) -> Cli {
         cli: false,
         make_mod: None,
         mod_folder: None,
-        mod_version: "1.0.0".to_string(),
+        mod_version: None,
         mod_supported_version: None,
         mod_target: None,
         install: false,
+        install_dir: None,
+        file_timeout: None,
+        cache_stats: false,
+        clear_cache: false,
     }
 }
 
@@ -590,7 +594,7 @@ fn a_finished_run_is_packed_into_a_launcher_ready_mod() {
     assert_eq!(run(cli), 0, "a pinned value must translate and pack");
 
     let output = dir.join("mod-ru");
-    let mod_root = output.join("Pack_Test");
+    let mod_root = output.join("Pack_Test_ru");
     let descriptor =
         std::fs::read_to_string(mod_root.join("descriptor.mod")).expect("descriptor.mod");
     assert!(descriptor.starts_with('\u{feff}'), "descriptor needs a BOM");
@@ -600,8 +604,9 @@ fn a_finished_run_is_packed_into_a_launcher_ready_mod() {
         "the path belongs in the .mod file only: {descriptor}"
     );
 
-    let mod_file = std::fs::read_to_string(output.join("Pack_Test.mod")).expect(".mod file");
-    assert!(mod_file.ends_with("path=\"mod/Pack_Test\"\n"), "{mod_file}");
+    let mod_file =
+        std::fs::read_to_string(output.join("Pack_Test_ru.mod")).expect(".mod file");
+    assert!(mod_file.ends_with("path=\"mod/Pack_Test_ru\"\n"), "{mod_file}");
 
     let packed = mod_root
         .join("localisation")

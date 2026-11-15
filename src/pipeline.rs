@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::config::{atomic_write_localisation, LogTag};
@@ -96,7 +97,21 @@ pub struct FileOutcome {
 /// A fixed cap silently dropped big files: retries with exponential backoff can
 /// legitimately cost tens of seconds for a single line.
 pub fn file_translation_timeout(line_count: usize) -> f64 {
+    if let Some(Some(seconds)) = file_timeout_override().get() {
+        return *seconds;
+    }
     120.0f64.max(60.0 + 0.35 * line_count as f64)
+}
+
+/// `--file-timeout`, set once by the CLI; `None` keeps the formula above.
+fn file_timeout_override() -> &'static OnceLock<Option<f64>> {
+    static CELL: OnceLock<Option<f64>> = OnceLock::new();
+    &CELL
+}
+
+/// Replace the per-file budget. `None` restores the calculated default.
+pub fn set_file_timeout(seconds: Option<f64>) {
+    let _ = file_timeout_override().set(seconds);
 }
 
 fn finish(
