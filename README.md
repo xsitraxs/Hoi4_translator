@@ -138,6 +138,12 @@ hoi4-translator --src examples/demo-mod --dst /tmp/out --target ru --dry-run
 | `--no-report` | не создавать JSON/CSV отчёт |
 | `--quiet` | только итог, без строк файлов |
 | `--dry-run` | только разбор файлов, без перевода и записи |
+| `--make-mod NAME` | собрать готовый мод: папка, `descriptor.mod`, `.mod` (см. [`docs/MAKE-A-TRANSLATED-MOD.md`](docs/MAKE-A-TRANSLATED-MOD.md)) |
+| `--mod-folder NAME` | имя папки и `.mod`-файла (латиница без пробелов) |
+| `--mod-target PATH` | дескриптор мода-цели: оттуда `dependencies` и `supported_version` |
+| `--mod-version X.Y.Z` | версия мода перевода (по умолчанию 1.0.0) |
+| `--mod-supported-version X.Y.*` | `supported_version` в дескрипторе |
+| `--install` | скопировать готовый мод в папку модов игры |
 
 Полный список: `hoi4-translator --help`.
 
@@ -231,9 +237,9 @@ Windows-бинарник собирается для тегов и ручног�
 - [x] Ядро на Rust: парсер, валидация, глоссарий, ванильные переводы, кэш, отчёты.
 - [x] CLI с теми же ключами и кодами возврата, что у Python-версии.
 - [x] Движки Google/DeepL/MyMemory без Python, Java и внешних JAR.
-- [ ] Настольное окно (Tauri 2 поверх того же Rust-слоя) с предпросмотром и журналом в реальном времени.
-- [ ] Сборка перевод-мода из CLI: `--make-mod` (дескриптор + `.mod` + установка в папку модов),
+- [x] Сборка перевод-мода из CLI: `--make-mod` (дескриптор + `.mod` + `--install` в папку модов),
       см. [`docs/MAKE-A-TRANSLATED-MOD.md`](docs/MAKE-A-TRANSLATED-MOD.md).
+- [ ] Настольное окно (Tauri 2 поверх того же Rust-слоя) с предпросмотром и журналом в реальном времени.
 - [ ] Пользовательские правила замены на регулярных выражениях.
 - [ ] Глоссарий в формате DeepL (словарь на стороне сервиса).
 - [ ] Больше движков (Yandex, Microsoft, локальные LLM через OpenAI-совместимый API).

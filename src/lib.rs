@@ -8,6 +8,7 @@
 //! * [`translation`] talks to Google, DeepL and MyMemory through the fallback
 //!   chain, with the [`cache`] in front of it;
 //! * [`pipeline`] puts those together per file;
+//! * [`modpack`] turns a finished run into a launcher-ready mod;
 //! * [`cli`] is the command line front end.
 
 pub mod cache;
@@ -16,6 +17,7 @@ pub mod config;
 pub mod glossary;
 pub mod inspect;
 pub mod localisation;
+pub mod modpack;
 pub mod pipeline;
 pub mod providers;
 pub mod report;

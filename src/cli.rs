@@ -16,6 +16,7 @@ use crate::localisation::{
     collect_yml_files, is_supported_target, rename_dst, validate_directory_relationships,
     validate_output_path_collisions, HOI4_TARGET_LANGS,
 };
+use crate::modpack;
 use crate::pipeline::{process_file, BrokenLineMode, FileResult};
 use crate::providers::ENGINES;
 use crate::report::RunReport;
@@ -88,6 +89,30 @@ pub struct Cli {
     #[arg(long = "no-report", action = ArgAction::SetTrue)]
     pub no_report: bool,
 
+    /// Собрать готовый мод: имя для лаунчера (включает сборку)
+    #[arg(long = "make-mod", value_name = "NAME")]
+    pub make_mod: Option<String>,
+
+    /// Имя папки и .mod-файла (латиница без пробелов); по умолчанию из --make-mod
+    #[arg(long = "mod-folder", value_name = "NAME")]
+    pub mod_folder: Option<String>,
+
+    /// Версия мода перевода
+    #[arg(long = "mod-version", value_name = "X.Y.Z", default_value = "1.0.0")]
+    pub mod_version: String,
+
+    /// supported_version мода; по умолчанию из --mod-target или 1.*
+    #[arg(long = "mod-supported-version", value_name = "X.Y.*")]
+    pub mod_supported_version: Option<String>,
+
+    /// descriptor.mod мода-цели: оттуда берутся dependencies и supported_version
+    #[arg(long = "mod-target", value_name = "PATH")]
+    pub mod_target: Option<PathBuf>,
+
+    /// Скопировать готовый мод в папку модов игры
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub install: bool,
+
     /// Только проверить файлы: разобрать, найти битые строки и дубликаты ключей
     #[arg(long = "dry-run", action = ArgAction::SetTrue)]
     pub dry_run: bool,
@@ -153,6 +178,19 @@ pub fn run(cli: Cli) -> i32 {
     if cli.concurrency == 0 {
         return fail("Параллельных запросов должно быть не меньше одного: --concurrency N (N ≥ 1)");
     }
+    if cli.install && cli.make_mod.is_none() {
+        return fail("--install без --make-mod \"Имя мода\": нечего устанавливать");
+    }
+    if cli.make_mod.is_some() && cli.dry_run {
+        return fail("--make-mod нельзя совместить с --dry-run: пробный прогон ничего не пишет");
+    }
+    let target_mod = match cli.mod_target.as_deref() {
+        Some(path) => match modpack::read_target_descriptor(path) {
+            Ok(target) => Some(target),
+            Err(error) => return fail(&error.to_string()),
+        },
+        None => None,
+    };
 
     let files = collect_yml_files(&cli.src);
     if files.is_empty() {
@@ -357,8 +395,71 @@ pub fn run(cli: Cli) -> i32 {
         println!("{}", translator.validation_summary());
     }
 
+    let mut pack_failed = false;
+    if let Some(display_name) = cli.make_mod.clone() {
+        let folder = cli
+            .mod_folder
+            .clone()
+            .unwrap_or_else(|| modpack::mod_folder_name(&display_name, &cli.target));
+        let supported_version = cli
+            .mod_supported_version
+            .clone()
+            .or_else(|| {
+                target_mod
+                    .as_ref()
+                    .and_then(|target| target.supported_version.clone())
+            })
+            .unwrap_or_else(|| modpack::DEFAULT_SUPPORTED_VERSION.to_string());
+        let dependency = target_mod.as_ref().and_then(|target| target.name.clone());
+        let options = modpack::ModPackOptions {
+            display_name: display_name.clone(),
+            folder: folder.clone(),
+            version: cli.mod_version.clone(),
+            supported_version,
+            dependency: dependency.clone(),
+            tags: vec![modpack::DEFAULT_TAG.to_string()],
+            target_lang_code: cli.target.clone(),
+            source_dir: cli.dst.clone(),
+            output_dir: cli.dst.clone(),
+            install: cli.install,
+        };
+        match modpack::build(&options, &mut log_callback) {
+            Ok(result) => {
+                println!(
+                    "Мод собран: {} (файлов перевода: {})",
+                    result.folder.display(),
+                    result.files
+                );
+                println!("Описание для лаунчера: {}", result.mod_file.display());
+                if let Some(installed) = &result.installed {
+                    println!("Установлен в папку игры: {}", installed.display());
+                } else {
+                    println!(
+                        "Скопируйте {} и {} в папку модов игры (или добавьте --install)",
+                        result.folder.display(),
+                        result
+                            .mod_file
+                            .file_name()
+                            .map(|name| name.to_string_lossy().to_string())
+                            .unwrap_or_default()
+                    );
+                }
+                match &dependency {
+                    Some(dependency) => println!("Зависимость (мод-цель): {dependency}"),
+                    None => {
+                        println!("Мод-цель не указан (--mod-target): перевод ляжет поверх ванили")
+                    }
+                }
+            }
+            Err(error) => {
+                log_callback(&format!("  Не удалось собрать мод: {error}"), LogTag::Error);
+                pack_failed = true;
+            }
+        }
+    }
+
     println!("Готово: файлов записано {written}, ошибок {failures}");
-    if failures == 0 {
+    if failures == 0 && !pack_failed {
         0
     } else {
         1
@@ -399,6 +500,62 @@ mod tests {
         assert!(preflight_engine("DeepL", Some("key")).is_ok());
         assert!(preflight_engine("Bing", Some("key")).is_err());
         assert!(preflight_engine("Google", None).is_ok());
+    }
+
+    fn pack_cli(extra: &[&str]) -> Cli {
+        // A destination outside the source tree, so the folder checks pass and
+        // the packing rules themselves are what the test exercises.
+        let destination = std::env::temp_dir()
+            .join("hoi4-translator-pack-test")
+            .to_string_lossy()
+            .to_string();
+        let mut args = vec![
+            "hoi4-translator",
+            "--src",
+            env!("CARGO_MANIFEST_DIR"),
+            "--dst",
+            destination.as_str(),
+        ];
+        args.extend_from_slice(extra);
+        Cli::try_parse_from(args).expect("parsed")
+    }
+
+    #[test]
+    fn packing_flags_are_checked_before_anything_runs() {
+        // --install on its own has nothing to install.
+        assert_eq!(run(pack_cli(&["--install"])), 2);
+        // A dry run writes nothing, so it cannot build a mod either.
+        assert_eq!(run(pack_cli(&["--dry-run", "--make-mod", "MyMod ru"])), 2);
+        // A descriptor that does not exist is a usage error, not a late surprise.
+        assert_eq!(
+            run(pack_cli(&[
+                "--make-mod",
+                "MyMod ru",
+                "--mod-target",
+                "/definitely/missing/descriptor.mod",
+            ])),
+            2
+        );
+    }
+
+    #[test]
+    fn the_pack_options_come_from_the_command_line() {
+        let cli = pack_cli(&[
+            "--make-mod",
+            "MyMod — русский",
+            "--mod-version",
+            "2.0.0",
+            "--mod-supported-version",
+            "1.15.*",
+        ]);
+        assert_eq!(cli.make_mod.as_deref(), Some("MyMod — русский"));
+        assert_eq!(cli.mod_version, "2.0.0");
+        assert_eq!(cli.mod_supported_version.as_deref(), Some("1.15.*"));
+        assert_eq!(
+            modpack::mod_folder_name(cli.make_mod.as_deref().unwrap_or_default(), &cli.target),
+            "MyMod"
+        );
+        assert!(!cli.install);
     }
 
     #[test]
