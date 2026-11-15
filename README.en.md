@@ -25,13 +25,15 @@ written, so a broken translation never reaches the game.
 | What | For whom |
 | --- | --- |
 | `hoi4-translator.exe` | Windows, nothing to install — just run it (built by CI) |
-| From source | Rust 1.75+, `cargo build --release`, binary in `target/release/hoi4-translator` |
+| `hoi4-translator-gui.exe` | the same with a window in the browser: `--open` (built by CI next to the console one) |
+| From source | Rust 1.75+, `cargo build --release`, binaries in `target/release/hoi4-translator` and `hoi4-translator-gui` |
 
 ```bash
 git clone https://github.com/xsitraxs/Hoi4_translator.git
 cd Hoi4_translator
 cargo build --release
 ./target/release/hoi4-translator --help
+./target/release/hoi4-translator-gui --help
 ```
 
 ### What the output looks like
@@ -57,7 +59,7 @@ written at all.
 
 * **Where it comes from.** The binary is built by GitHub Actions from open source; the CI run is
   linked in the release notes.
-* **Checksum.** Every release ships `SHA256SUMS.txt`: `certutil -hashfile hoi4-translator.exe SHA256`
+* **Checksum.** Every release ships `SHA256SUMS.txt`: `certutil -hashfile hoi4-translator.exe SHA256` (and the same for `hoi4-translator-gui.exe`)
   on Windows, `sha256sum -c SHA256SUMS.txt` elsewhere.
 * **SmartScreen.** The binary is not code-signed (that costs money), so Windows shows
   "Windows protected your PC": *More info* → *Run anyway*.
@@ -83,6 +85,28 @@ written at all.
 * **Atomic writes:** files are replaced whole (temp file + rename), so the game can never read half
   a line.
 * **No Java, no Python:** a single self-contained binary with SQLite compiled in.
+
+## 🖥 The window (GUI)
+
+The window is the same translation with buttons and a log, and it needs no native libraries:
+the program starts a server on this machine and opens a page in the browser.
+
+```bash
+hoi4-translator-gui --open          # prints one URL with a token and opens it
+hoi4-translator-gui --port 9000     # another port; a busy port falls back to a free one
+hoi4-translator-gui --host 0.0.0.0  # expose the window to the network (default: this PC only)
+```
+
+* the same settings as the flags: folders, language, engine, DeepL key, glossary, vanilla, threads,
+  broken-line mode and the mod build;
+* "Check only" is `--dry-run`: parsing without internet and without writing;
+* per-file and per-line progress, a log with `info`/`warning`/`error` levels, a file list with statuses;
+* "Stop" ends the run after the current file — the report and the cache are still written, like Ctrl+C;
+* settings are remembered in the browser (`localStorage`), the cache and the log are the same as the CLI's.
+
+**Access token.** The address carries a random token; any request without it gets `401`. Treat the
+address as the password to the window. The server listens on `127.0.0.1` unless `--host` says
+otherwise, and "Close server" in the page footer (or Ctrl+C) ends it.
 
 ## 🛠 Requirements
 
@@ -198,7 +222,8 @@ same dependency versions.
 
 `python hoi4_translator.py --cli --src … --dst …` becomes `hoi4-translator --src … --dst …`; the
 flags are the same. JavaSim/JAR are not needed, the cache and report formats are unchanged, and the
-GUI settings (including the OS keyring) were not ported along with the window. Details:
+the GUI is not Tkinter any more: a local server plus a page in the browser, with settings kept in
+`localStorage` and no OS keyring (the DeepL key comes from the form or `DEEPL_API_KEY`). Details:
 [`docs/PORTING-NOTES.md`](docs/PORTING-NOTES.md). The 2.0 audit — what was checked,
 what was found and fixed, and what is deliberately left open: [`docs/AUDIT.md`](docs/AUDIT.md).
 
@@ -213,7 +238,9 @@ Turning a finished translation into a launcher-ready mod (folder layout,
 - [x] Google/DeepL/MyMemory without Python, Java or external JARs.
 - [x] Building the translation mod from the CLI: `--make-mod` (descriptor + `.mod` +
       `--install` into the mods folder), see [`docs/MAKE-A-TRANSLATED-MOD.md`](docs/MAKE-A-TRANSLATED-MOD.md).
-- [ ] Desktop window (Tauri 2 over the same Rust library) with live log and preview.
+- [x] The window on the same Rust layer: a local server plus a browser page, with a live log and progress.
+- [ ] A native shell (Tauri) around the same window, for installers and a shortcut.
+- [ ] Page-by-page preview of the translation before it is written.
 - [ ] User replacement rules based on regular expressions.
 - [ ] DeepL-style glossary (server-side dictionary).
 - [ ] More engines (Yandex, Microsoft, local LLMs through an OpenAI-compatible API).

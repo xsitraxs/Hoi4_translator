@@ -20,6 +20,10 @@ pub const APP_NAME: &str = "Hoi4Translator";
 /// Default number of concurrent translation requests for one run.
 pub const DEFAULT_CONCURRENCY: usize = 15;
 
+/// Largest thread count one file may use. Each worker is an OS thread, and the
+/// engines rate-limit long before this, so more is only a way to hurt the machine.
+pub const MAX_CONCURRENCY: usize = 64;
+
 /// Bump whenever translation/post-processing semantics change so stale cache
 /// entries cannot bypass newer validation or typography rules.
 pub const CACHE_FORMAT_VERSION: u32 = 2;
@@ -189,8 +193,12 @@ impl log::Log for AppLogger {
         };
         let line = format!("{} - {level} - {}\n", now_iso8601(), record.args());
         // Console messages share stdout with progress lines: two streams made the
-        // output unreadable as soon as an engine warning landed mid-file.
-        print!("{line}");
+        // output unreadable as soon as an engine warning landed mid-file. The
+        // write is fallible on purpose — `| head` closes the pipe, and a logging
+        // call must not be the thing that panics.
+        let mut stdout = io::stdout();
+        let _ = stdout.write_all(line.as_bytes());
+        let _ = stdout.flush();
         write_log_line(&line);
     }
 

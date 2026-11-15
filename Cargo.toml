@@ -18,6 +18,10 @@ path = "src/lib.rs"
 name = "hoi4-translator"
 path = "src/main.rs"
 
+[[bin]]
+name = "hoi4-translator-gui"
+path = "src/bin/gui.rs"
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4.5", features = ["derive"] }

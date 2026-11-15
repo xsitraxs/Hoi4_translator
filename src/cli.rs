@@ -11,7 +11,7 @@ use std::sync::Once;
 use clap::{ArgAction, Parser};
 
 use crate::cache::TranslationCache;
-use crate::config::{self, LogTag};
+use crate::config::{self, LogTag, MAX_CONCURRENCY};
 use crate::glossary::Glossary;
 use crate::inspect::{format_report, inspect_files};
 use crate::localisation::{
@@ -181,10 +181,6 @@ fn preflight_engine(engine: &str, api_key: Option<&str>) -> Result<(), String> {
 /// A window and a command line can run at once, so the stop flag is process
 /// wide and set by the handler below.
 static STOP: AtomicBool = AtomicBool::new(false);
-
-/// Largest thread count one file may use. Each worker is an OS thread, and the
-/// engines rate-limit long before this, so more is only a way to hurt the machine.
-const MAX_CONCURRENCY: usize = 64;
 
 /// Ctrl+C stops the run after the line being translated: the report and the
 /// cache still get written. A second Ctrl+C terminates the process as usual.

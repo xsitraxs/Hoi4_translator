@@ -153,6 +153,32 @@ jobs:
         run: |
           cargo run --release -- --src examples/demo-mod --dst /tmp/hoi4-out --target ru --dry-run
 
+      - name: Smoke-test the window over HTTP
+        # The window is a hand-written HTTP server, so the only honest check is a
+        # real request: this compiles the second binary and proves the token gate.
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --bin hoi4-translator-gui
+          ./target/release/hoi4-translator-gui --port 8765 > "$RUNNER_TEMP/gui.log" 2>&1 &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+
+          url=""
+          for _ in $(seq 1 40); do
+            url=$(grep -oE 'http://[^ ]+' "$RUNNER_TEMP/gui.log" | head -1 || true)
+            if [ -n "$url" ]; then break; fi
+            sleep 0.5
+          done
+          if [ -z "$url" ]; then cat "$RUNNER_TEMP/gui.log"; exit 1; fi
+
+          token="${url##*token=}"
+          base="${url%%/?token=*}"
+          curl -fsS "$base/api/meta?token=$token" | grep -q '"engines"'
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$base/api/meta")
+          test "$code" = "401"
+          echo "window answered $code without a token, as expected"
+
       - name: Check that the release tag matches Cargo.toml
         if: startsWith(github.ref, 'refs/tags/')
         run: |
@@ -188,12 +214,15 @@ jobs:
           # here instead of on the user's PC.
           .\target\release\hoi4-translator.exe --help
           .\target\release\hoi4-translator.exe --src examples\demo-mod --dst "$env:TEMP\hoi4-out" --target ru --dry-run
+          .\target\release\hoi4-translator-gui.exe --help
 
       - name: Upload binary as an artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: hoi4-translator-windows
-          path: target/release/hoi4-translator.exe
+          path: |
+            target/release/hoi4-translator.exe
+            target/release/hoi4-translator-gui.exe
 
   release:
     name: Publish release assets
@@ -212,7 +241,7 @@ jobs:
       - name: Checksums
         working-directory: artifacts
         run: |
-          sha256sum */hoi4-translator.exe | tee SHA256SUMS.txt
+          sha256sum */hoi4-translator.exe */hoi4-translator-gui.exe | tee SHA256SUMS.txt
           test -s SHA256SUMS.txt
 
       - name: Create GitHub Release
@@ -221,6 +250,7 @@ jobs:
           name: "Hoi4 Translator ${{ github.ref_name }}"
           files: |
             artifacts/hoi4-translator-windows/hoi4-translator.exe
+            artifacts/hoi4-translator-windows/hoi4-translator-gui.exe
             artifacts/SHA256SUMS.txt
           generate_release_notes: false
         env:

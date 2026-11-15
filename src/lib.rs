@@ -9,13 +9,16 @@
 //!   chain, with the [`cache`] in front of it;
 //! * [`pipeline`] puts those together per file;
 //! * [`modpack`] turns a finished run into a launcher-ready mod;
-//! * [`cli`] is the command line front end.
+//! * [`job`] is one run as a value: settings in, progress events out;
+//! * [`cli`] is the command line front end, [`gui`] the window.
 
 pub mod cache;
 pub mod cli;
 pub mod config;
 pub mod glossary;
+pub mod gui;
 pub mod inspect;
+pub mod job;
 pub mod localisation;
 pub mod modpack;
 pub mod pipeline;
