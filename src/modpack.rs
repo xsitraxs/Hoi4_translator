@@ -121,7 +121,10 @@ fn clean_field(value: &str) -> String {
 /// Descriptor text; `with_path` adds the one line the sibling `.mod` needs.
 pub fn render_descriptor(options: &ModPackOptions, with_path: bool) -> String {
     let mut text = String::from('\u{feff}');
-    text.push_str(&format!("name=\"{}\"\n", clean_field(&options.display_name)));
+    text.push_str(&format!(
+        "name=\"{}\"\n",
+        clean_field(&options.display_name)
+    ));
     text.push_str(&format!("version=\"{}\"\n", clean_field(&options.version)));
     text.push_str(&format!(
         "supported_version=\"{}\"\n",
@@ -214,8 +217,8 @@ pub fn collect_translation_files(localisation_root: &Path, database: &str) -> Re
     }
 
     for path in &selected {
-        let bytes = fs::read(path)
-            .with_context(|| format!("не удалось прочитать {}", path.display()))?;
+        let bytes =
+            fs::read(path).with_context(|| format!("не удалось прочитать {}", path.display()))?;
         if !bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
             bail!(
                 "{}: файл перевода должен быть в UTF-8 с BOM — игра не читает такой файл",
@@ -270,7 +273,11 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
             copy_tree(&path, &target)?;
         } else {
             fs::copy(&path, &target).with_context(|| {
-                format!("не удалось скопировать {} в {}", path.display(), target.display())
+                format!(
+                    "не удалось скопировать {} в {}",
+                    path.display(),
+                    target.display()
+                )
             })?;
         }
     }
@@ -299,7 +306,10 @@ fn install_pack(
             LogTag::Warning,
         );
         fs::remove_dir_all(&target_folder).with_context(|| {
-            format!("не удалось удалить старую версию {}", target_folder.display())
+            format!(
+                "не удалось удалить старую версию {}",
+                target_folder.display()
+            )
         })?;
     }
     copy_tree(mod_root, &target_folder)?;
@@ -435,7 +445,13 @@ mod tests {
     #[test]
     fn descriptor_and_mod_file_differ_only_by_path() {
         let root = temp_dir("descriptor");
-        write_translation(&root, "russian", "a_l_russian.yml", "l_russian:", " A:0 \"А\"");
+        write_translation(
+            &root,
+            "russian",
+            "a_l_russian.yml",
+            "l_russian:",
+            " A:0 \"А\"",
+        );
         let result = build(&options(root.clone(), root.clone()), &mut |_, _| {}).expect("built");
 
         let descriptor = fs::read_to_string(&result.descriptor).expect("descriptor");
@@ -445,7 +461,10 @@ mod tests {
         assert!(descriptor.contains("name=\"MyMod — русский перевод\""));
         assert!(descriptor.contains("dependencies={\n\t\"MyMod\"\n}"));
         assert!(descriptor.contains("supported_version=\"1.*\""));
-        assert!(!descriptor.contains("path="), "descriptor must not carry path");
+        assert!(
+            !descriptor.contains("path="),
+            "descriptor must not carry path"
+        );
         assert!(mod_file.contains("path=\"mod/MyMod_ru\""));
 
         let expected = format!(
@@ -461,8 +480,20 @@ mod tests {
     #[test]
     fn translation_files_are_copied_with_their_language_folder() {
         let root = temp_dir("copy");
-        write_translation(&root, "russian", "a_l_russian.yml", "l_russian:", " A:0 \"А\"");
-        write_translation(&root, "english", "a_l_english.yml", "l_english:", " A:0 \"A\"");
+        write_translation(
+            &root,
+            "russian",
+            "a_l_russian.yml",
+            "l_russian:",
+            " A:0 \"А\"",
+        );
+        write_translation(
+            &root,
+            "english",
+            "a_l_english.yml",
+            "l_english:",
+            " A:0 \"A\"",
+        );
         let result = build(&options(root.clone(), root.clone()), &mut |_, _| {}).expect("built");
 
         let russian = result
@@ -484,7 +515,13 @@ mod tests {
     #[test]
     fn a_file_without_a_bom_or_the_right_header_is_refused() {
         let root = temp_dir("invalid");
-        write_translation(&root, "russian", "a_l_russian.yml", "l_russian:", " A:0 \"А\"");
+        write_translation(
+            &root,
+            "russian",
+            "a_l_russian.yml",
+            "l_russian:",
+            " A:0 \"А\"",
+        );
         let bad = root
             .join("localisation")
             .join("russian")
@@ -494,8 +531,11 @@ mod tests {
             .expect_err("a file without a BOM must be refused");
         assert!(error.to_string().contains("BOM"), "{error}");
 
-        fs::write(&bad, [&[0xEF, 0xBB, 0xBF][..], b"l_english:\n B:0 \"B\"\n"].concat())
-            .expect("write");
+        fs::write(
+            &bad,
+            [&[0xEF, 0xBB, 0xBF][..], b"l_english:\n B:0 \"B\"\n"].concat(),
+        )
+        .expect("write");
         let error = build(&options(root.clone(), root.clone()), &mut |_, _| {})
             .expect_err("a wrong header must be refused");
         assert!(error.to_string().contains("l_russian"), "{error}");

@@ -410,9 +410,7 @@ pub fn run(cli: Cli) -> i32 {
                     .and_then(|target| target.supported_version.clone())
             })
             .unwrap_or_else(|| modpack::DEFAULT_SUPPORTED_VERSION.to_string());
-        let dependency = target_mod
-            .as_ref()
-            .and_then(|target| target.name.clone());
+        let dependency = target_mod.as_ref().and_then(|target| target.name.clone());
         let options = modpack::ModPackOptions {
             display_name: display_name.clone(),
             folder: folder.clone(),
@@ -439,7 +437,8 @@ pub fn run(cli: Cli) -> i32 {
                     println!(
                         "Скопируйте {} и {} в папку модов игры (или добавьте --install)",
                         result.folder.display(),
-                        result.mod_file
+                        result
+                            .mod_file
                             .file_name()
                             .map(|name| name.to_string_lossy().to_string())
                             .unwrap_or_default()
@@ -447,16 +446,13 @@ pub fn run(cli: Cli) -> i32 {
                 }
                 match &dependency {
                     Some(dependency) => println!("Зависимость (мод-цель): {dependency}"),
-                    None => println!(
-                        "Мод-цель не указан (--mod-target): перевод ляжет поверх ванили"
-                    ),
+                    None => {
+                        println!("Мод-цель не указан (--mod-target): перевод ляжет поверх ванили")
+                    }
                 }
             }
             Err(error) => {
-                log_callback(
-                    &format!("  Не удалось собрать мод: {error}"),
-                    LogTag::Error,
-                );
+                log_callback(&format!("  Не удалось собрать мод: {error}"), LogTag::Error);
                 pack_failed = true;
             }
         }
@@ -556,10 +552,7 @@ mod tests {
         assert_eq!(cli.mod_version, "2.0.0");
         assert_eq!(cli.mod_supported_version.as_deref(), Some("1.15.*"));
         assert_eq!(
-            modpack::mod_folder_name(
-                cli.make_mod.as_deref().unwrap_or_default(),
-                &cli.target
-            ),
+            modpack::mod_folder_name(cli.make_mod.as_deref().unwrap_or_default(), &cli.target),
             "MyMod"
         );
         assert!(!cli.install);
