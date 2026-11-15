@@ -15,8 +15,8 @@ use crate::config::{self, LogTag};
 use crate::glossary::Glossary;
 use crate::inspect::{format_report, inspect_files};
 use crate::localisation::{
-    collect_yml_files, set_source_encoding, is_supported_target, rename_dst, validate_directory_relationships,
-    validate_output_path_collisions, HOI4_TARGET_LANGS,
+    collect_yml_files, is_supported_target, rename_dst, set_source_encoding,
+    validate_directory_relationships, validate_output_path_collisions, HOI4_TARGET_LANGS,
 };
 use crate::modpack;
 use crate::pipeline::{self, process_file, BrokenLineMode, FileResult};
