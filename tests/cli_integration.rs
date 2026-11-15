@@ -37,6 +37,7 @@ fn base_cli(src: PathBuf, dst: PathBuf) -> Cli {
         dst,
         target: "ru".to_string(),
         source_lang: "en".to_string(),
+        source_encoding: "auto".to_string(),
         engine: "Google".to_string(),
         api_key: None,
         java_jar: None,

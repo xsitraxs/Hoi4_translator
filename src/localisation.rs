@@ -194,7 +194,48 @@ pub const SOURCE_ENCODINGS: [&str; 7] = [
 /// BOM the order is the one the Python build used — UTF-8, then cp1251, then
 /// cp1252, then latin-1 — but a candidate only wins when it decodes the whole
 /// file without an undefined byte, which is what makes cp1252 reachable at all.
+/// `--source-encoding`: a file whose single-byte encoding cannot be guessed.
+static FORCED_ENCODING: OnceLock<String> = OnceLock::new();
+
+/// Force the source decoder (`utf-8`, `cp1251`, `cp1252`, `latin-1`).
+///
+/// Guessing only works when the byte range is unambiguous; a German or Polish
+/// file saved without a BOM looks like cp1251 to the detector, and only the user
+/// knows what it really is.
+pub fn set_source_encoding(encoding: &str) {
+    let normalized = encoding.trim().to_lowercase();
+    if normalized.is_empty() || normalized == "auto" {
+        return;
+    }
+    let _ = FORCED_ENCODING.set(normalized);
+}
+
+fn forced_source_encoding() -> Option<&'static str> {
+    FORCED_ENCODING.get().map(String::as_str)
+}
+
 fn decode_source(bytes: &[u8]) -> (String, &'static str) {
+    decode_source_with(bytes, forced_source_encoding())
+}
+
+fn decode_source_with(bytes: &[u8], forced: Option<&str>) -> (String, &'static str) {
+    if let Some(encoding) = forced {
+        let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+        return match encoding {
+            "utf-8" => (String::from_utf8_lossy(bytes).into_owned(), "utf-8"),
+            "cp1251" => {
+                let (decoded, _actual, _errors) = encoding_rs::WINDOWS_1251.decode(bytes);
+                (decoded.into_owned(), "cp1251")
+            }
+            "cp1252" => {
+                let (decoded, _actual, _errors) = encoding_rs::WINDOWS_1252.decode(bytes);
+                (decoded.into_owned(), "cp1252")
+            }
+            // latin-1 really is byte → code point; WHATWG has no ISO-8859-1, and
+            // windows-1252 differs in exactly the 0x80..0x9F block.
+            _ => (bytes.iter().map(|byte| *byte as char).collect(), "latin-1"),
+        };
+    }
     if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
         if let Ok(text) = std::str::from_utf8(rest) {
             return (text.to_string(), "utf-8-sig");
@@ -829,6 +870,29 @@ mod tests {
         assert_eq!(encoding, "cp1251");
         assert!(text.contains("Привет"), "{text:?}");
         assert!(SOURCE_ENCODINGS.contains(&encoding));
+    }
+
+    #[test]
+    fn a_forced_encoding_decides_a_single_byte_file() {
+        // The same byte is "д" in cp1251 and "ä" in cp1252: only the user can
+        // say which one the file meant.
+        let bytes = b"KEY:0 \"\xE4\"\n";
+        let (cyrillic, label) = decode_source_with(bytes, Some("cp1251"));
+        assert_eq!(label, "cp1251");
+        assert!(cyrillic.contains('д'), "{cyrillic}");
+
+        let (german, label) = decode_source_with(bytes, Some("cp1252"));
+        assert_eq!(label, "cp1252");
+        assert!(german.contains('ä'), "{german}");
+
+        let (utf8, label) = decode_source_with(b"KEY:0 \"\xD0\xB4\"\n", Some("utf-8"));
+        assert_eq!(label, "utf-8");
+        assert!(utf8.contains('д'), "{utf8}");
+
+        // Without a forced encoding the detector still decides.
+        if forced_source_encoding().is_none() {
+            assert_eq!(decode_source(&bytes).1, "cp1251");
+        }
     }
 
     #[test]

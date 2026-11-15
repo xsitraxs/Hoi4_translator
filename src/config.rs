@@ -4,12 +4,13 @@
 //! where the log goes, and how a translated file is written so that a crash
 //! never leaves a half-written `.yml` behind.
 
+use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Keep in sync with the git tag of a release (CI compares them).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -187,7 +188,9 @@ impl log::Log for AppLogger {
             log::Level::Trace => "TRACE",
         };
         let line = format!("{} - {level} - {}\n", now_iso8601(), record.args());
-        eprint!("{line}");
+        // Console messages share stdout with progress lines: two streams made the
+        // output unreadable as soon as an engine warning landed mid-file.
+        print!("{line}");
         write_log_line(&line);
     }
 
@@ -332,6 +335,52 @@ fn temp_sibling(destination: &Path) -> PathBuf {
     destination.with_file_name(format!(".{name}.{}.{serial}.tmp", std::process::id()))
 }
 
+/// The shape `temp_sibling` produces: `.<name>.<pid>.<serial>.tmp`.
+fn is_temp_name(name: &str) -> bool {
+    name.starts_with('.') && name.ends_with(".tmp")
+}
+
+/// Remove temporary siblings an earlier run left behind when it was killed.
+///
+/// Only our own `.<name>.<pid>.<serial>.tmp` files older than a day are touched:
+/// a file a live run is writing is seconds old, and a day is long enough that no
+/// honest write looks abandoned. The sweep runs once per directory per process.
+fn sweep_abandoned_temp_files(directory: &Path) {
+    static SWEPT: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    let swept = SWEPT.get_or_init(|| Mutex::new(HashSet::new()));
+    {
+        let mut guard = swept
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !guard.insert(directory.to_path_buf()) {
+            return;
+        }
+    }
+    const MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !is_temp_name(name) {
+            continue;
+        }
+        let abandoned = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .map(|age| age > MAX_AGE)
+            .unwrap_or(false);
+        if abandoned {
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
 /// Persist a rename by flushing the directory that holds the new entry.
 #[cfg(unix)]
 fn sync_directory(directory: &Path) {
@@ -354,6 +403,7 @@ pub fn atomic_write_bytes(destination: &Path, bytes: &[u8]) -> io::Result<()> {
         _ => PathBuf::from("."),
     };
     fs::create_dir_all(&parent)?;
+    sweep_abandoned_temp_files(&parent);
 
     let temporary = temp_sibling(destination);
     let result = (|| -> io::Result<()> {
@@ -421,6 +471,26 @@ mod tests {
         let path = normalized_abs(Path::new("examples/../examples/demo-mod"));
         assert!(path.ends_with(Path::new("examples/demo-mod")));
         assert!(path.is_absolute());
+    }
+
+    #[test]
+    fn only_our_own_temp_names_are_swept() {
+        assert!(is_temp_name(".file.yml.1234.7.tmp"));
+        assert!(!is_temp_name("file.yml"));
+        assert!(!is_temp_name(".file.yml"));
+        assert!(!is_temp_name(".file.yml.1234.7.tmp.bak"));
+    }
+
+    #[test]
+    fn a_fresh_temp_file_is_left_alone() {
+        let dir = std::env::temp_dir().join(format!("hoi4-sweep-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        let fresh = dir.join(".kept.yml.1.0.tmp");
+        fs::write(&fresh, "x").expect("write");
+
+        atomic_write_text(&dir.join("kept.yml"), "content").expect("write");
+        assert!(fresh.exists(), "a live run's temp file must survive");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

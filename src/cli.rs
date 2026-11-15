@@ -15,7 +15,7 @@ use crate::config::{self, LogTag};
 use crate::glossary::Glossary;
 use crate::inspect::{format_report, inspect_files};
 use crate::localisation::{
-    collect_yml_files, is_supported_target, rename_dst, validate_directory_relationships,
+    collect_yml_files, set_source_encoding, is_supported_target, rename_dst, validate_directory_relationships,
     validate_output_path_collisions, HOI4_TARGET_LANGS,
 };
 use crate::modpack;
@@ -53,6 +53,10 @@ pub struct Cli {
     /// Язык исходников (по умолчанию en)
     #[arg(long = "source-lang", default_value = "en")]
     pub source_lang: String,
+
+    /// Кодировка исходников, если её не угадать: auto, utf-8, cp1251, cp1252, latin-1
+    #[arg(long = "source-encoding", default_value = "auto")]
+    pub source_encoding: String,
 
     /// Движок перевода: Google, DeepL или MyMemory
     #[arg(long, default_value = "Google")]
@@ -233,6 +237,20 @@ fn handle_cache_command(cli: &Cli) -> i32 {
 pub fn run(cli: Cli) -> i32 {
     if cli.cache_stats || cli.clear_cache {
         return handle_cache_command(&cli);
+    }
+    let source_encoding = cli.source_encoding.trim().to_lowercase();
+    if !matches!(
+        source_encoding.as_str(),
+        "auto" | "utf-8" | "cp1251" | "cp1252" | "latin-1"
+    ) {
+        return fail(&format!(
+            "Неизвестная кодировка --source-encoding: {}. Доступны: auto, utf-8, cp1251, \
+             cp1252, latin-1",
+            cli.source_encoding
+        ));
+    }
+    if source_encoding != "auto" {
+        set_source_encoding(&source_encoding);
     }
     if let Some(seconds) = cli.file_timeout {
         // 0 means "no limit"; the pipeline works in wall-clock seconds.
@@ -714,6 +732,13 @@ mod tests {
             2
         );
         assert_eq!(run(pack_cli(&["--make-mod", "   "])), 2);
+    }
+
+    #[test]
+    fn an_unknown_source_encoding_is_a_usage_error() {
+        // Only the refusal is checked here: a valid value sets a process-wide
+        // decoder, which would leak into every other test in this binary.
+        assert_eq!(run(pack_cli(&["--source-encoding", "koi8-r"])), 2);
     }
 
     #[test]

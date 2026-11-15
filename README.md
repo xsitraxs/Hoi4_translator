@@ -135,6 +135,7 @@ hoi4-translator --src examples/demo-mod --dst /tmp/out --target ru --dry-run
 | `--vanilla DIR` | папка `localisation` игры — переиспользовать официальные переводы |
 | `--skip-translated` | не переводить то, что уже переведено в папке результата |
 | `--broken-lines reject\|keep-original` | что делать со строкой, сломавшей формат |
+| `--source-encoding ENC` | кодировка исходников, если автоопределение не годится: `auto`, `utf-8`, `cp1251`, `cp1252`, `latin-1` |
 | `--concurrency N` | параллельных запросов на файл (по умолчанию 15, не больше 64) |
 | `--no-report` | не создавать JSON/CSV отчёт |
 | `--file-timeout SECONDS` | предел перевода одного файла (0 — без предела) |
