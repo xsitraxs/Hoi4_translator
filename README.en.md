@@ -116,6 +116,12 @@ hoi4-translator --src examples/demo-mod --dst /tmp/out --target ru --dry-run
 | `--no-report` | skip the JSON/CSV report |
 | `--quiet` | final summary only |
 | `--dry-run` | parse and report only, nothing translated or written |
+| `--make-mod NAME` | build the finished mod: folder, `descriptor.mod`, `.mod` (see [`docs/MAKE-A-TRANSLATED-MOD.md`](docs/MAKE-A-TRANSLATED-MOD.md)) |
+| `--mod-folder NAME` | folder and `.mod` file name (ASCII, no spaces) |
+| `--mod-target PATH` | target mod descriptor: supplies `dependencies` and `supported_version` |
+| `--mod-version X.Y.Z` | version of the translation mod (default 1.0.0) |
+| `--mod-supported-version X.Y.*` | `supported_version` written into the descriptor |
+| `--install` | copy the finished mod into the game's mods folder |
 
 Exit codes: `0` — everything written; `1` — at least one file was not written (or `--dry-run`
 found blocking problems); `2` — bad arguments or folders, nothing was started.
@@ -198,9 +204,9 @@ Turning a finished translation into a launcher-ready mod (folder layout,
 - [x] Rust core: parser, validation, glossary, vanilla reuse, cache, reports.
 - [x] CLI with the same flags and exit codes as the Python build.
 - [x] Google/DeepL/MyMemory without Python, Java or external JARs.
+- [x] Building the translation mod from the CLI: `--make-mod` (descriptor + `.mod` +
+      `--install` into the mods folder), see [`docs/MAKE-A-TRANSLATED-MOD.md`](docs/MAKE-A-TRANSLATED-MOD.md).
 - [ ] Desktop window (Tauri 2 over the same Rust library) with live log and preview.
-- [ ] Building the translation mod from the CLI: `--make-mod` (descriptor + `.mod` +
-      installation into the mods folder), see [`docs/MAKE-A-TRANSLATED-MOD.md`](docs/MAKE-A-TRANSLATED-MOD.md).
 - [ ] User replacement rules based on regular expressions.
 - [ ] DeepL-style glossary (server-side dictionary).
 - [ ] More engines (Yandex, Microsoft, local LLMs through an OpenAI-compatible API).
