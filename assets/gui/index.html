@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HoI4 Localization Tool</title>
+<style>
+  :root {
+    --bg: #14161a;
+    --panel: #1c1f25;
+    --panel-2: #23272f;
+    --line: #333944;
+    --text: #e6e3dc;
+    --muted: #9aa0ac;
+    --accent: #cf9b46;
+    --ok: #6fbf73;
+    --warn: #e0b252;
+    --err: #e06c62;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 18px; border-bottom: 1px solid var(--line);
+    background: var(--panel); position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  header h1 span { color: var(--accent); }
+  .pill {
+    margin-left: auto; display: inline-flex; align-items: center; gap: 8px;
+    padding: 5px 12px; border: 1px solid var(--line); border-radius: 999px;
+    color: var(--muted); font-size: 13px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .pill.running .dot { background: var(--warn); animation: pulse 1.2s infinite; }
+  .pill.ok .dot { background: var(--ok); }
+  .pill.error .dot { background: var(--err); }
+  @keyframes pulse { 50% { opacity: .25; } }
+
+  main {
+    display: grid; grid-template-columns: 380px minmax(0, 1fr);
+    gap: 16px; padding: 16px; align-items: start;
+  }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
+
+  section {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 14px;
+  }
+  section + section { margin-top: 14px; }
+  h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--muted); margin: 0 0 10px; font-weight: 600;
+  }
+  label { display: block; margin-bottom: 10px; }
+  label > span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  input, select {
+    width: 100%; padding: 7px 9px; border-radius: 7px;
+    border: 1px solid var(--line); background: var(--panel-2);
+    color: var(--text); font: inherit;
+  }
+  input:focus, select:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+  input[type=checkbox] { width: auto; margin-right: 7px; vertical-align: -1px; }
+  .check { display: flex; align-items: center; color: var(--text); font-size: 13px; margin-bottom: 8px; }
+  .check span { margin: 0; color: var(--text); font-size: 13px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .hint { color: var(--muted); font-size: 12px; margin: -4px 0 10px; }
+  .hidden { display: none !important; }
+
+  .actions { display: flex; gap: 10px; margin-top: 4px; flex-wrap: wrap; }
+  button {
+    flex: 1 1 auto; padding: 10px 14px; border-radius: 8px; cursor: pointer;
+    font: inherit; font-weight: 600; border: 1px solid var(--line);
+    background: var(--panel-2); color: var(--text);
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #1a1408; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.danger { border-color: #5a3030; color: #e8a49e; }
+
+  .progress { margin-bottom: 12px; }
+  .progress .bar {
+    height: 9px; background: var(--panel-2); border-radius: 999px; overflow: hidden;
+    border: 1px solid var(--line);
+  }
+  .progress .bar > i {
+    display: block; height: 100%; width: 0; background: var(--accent); transition: width .25s;
+  }
+  .progress .caption {
+    display: flex; justify-content: space-between; gap: 10px;
+    color: var(--muted); font-size: 12px; margin-top: 6px;
+  }
+  .progress .caption b { color: var(--text); font-weight: 600; }
+
+  .files { max-height: 190px; overflow: auto; margin: 0 0 12px; padding: 0; list-style: none; }
+  .files li {
+    display: flex; gap: 8px; align-items: baseline; padding: 3px 0;
+    border-bottom: 1px dashed rgba(255,255,255,.05); font-size: 13px;
+  }
+  .files .path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .chip.written { color: var(--ok); border-color: #33543a; }
+  .chip.error, .chip.rejected { color: var(--err); border-color: #573633; }
+  .chip.cancelled { color: var(--warn); border-color: #574a2c; }
+  .chip.working { color: var(--accent); border-color: #5a4a2a; }
+
+  #log {
+    height: 340px; overflow: auto; margin: 0; padding: 10px;
+    background: #101215; border: 1px solid var(--line); border-radius: 8px;
+    font: 12.5px/1.5 "Cascadia Mono", Consolas, monospace;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  #log .info { color: #cfd3da; }
+  #log .warning { color: var(--warn); }
+  #log .error { color: var(--err); }
+  #log .file { color: var(--accent); }
+  #log .done { color: var(--ok); }
+  footer { color: var(--muted); font-size: 12px; padding: 0 18px 18px; display: flex; gap: 14px; flex-wrap: wrap; }
+  footer button { flex: 0 0 auto; padding: 5px 10px; font-size: 12px; font-weight: 500; }
+</style>
+</head>
+<body>
+<header>
+  <h1>HoI4 <span>Localization Tool</span></h1>
+  <span class="pill" id="status"><i class="dot"></i><span id="status-text">готов</span></span>
+</header>
+
+<main>
+  <div>
+    <section>
+      <h2>Что переводим</h2>
+      <label><span>Исходники (папка мода или её localisation)</span>
+        <input id="src" placeholder="C:\mods\MyMod" autocomplete="off"></label>
+      <label><span>Куда писать перевод</span>
+        <input id="dst" placeholder="C:\mods\MyMod-ru" autocomplete="off"></label>
+      <div class="row">
+        <label><span>Язык перевода</span><select id="target"></select></label>
+        <label><span>Язык оригинала</span><select id="source_lang"></select></label>
+      </div>
+      <label><span>Кодировка исходников</span><select id="source_encoding"></select></label>
+      <p class="hint">Кодировку меняйте только если автоопределение ошиблось: файл без BOM из
+        немецкого или польского мода похож на cp1251.</p>
+      <p class="hint">Исходники и результат должны лежать в разных папках, иначе файлы перезапишут себя.</p>
+    </section>
+
+    <section>
+      <h2>Движок</h2>
+      <label><span>Сервис перевода</span><select id="engine"></select></label>
+      <label><span>Ключ DeepL (необязательно)</span>
+        <input id="api_key" type="password" autocomplete="off" placeholder="если пусто — берётся DEEPL_API_KEY"></label>
+      <div class="row">
+        <label><span>Параллельных запросов</span><input id="concurrency" type="number" min="1" step="1"></label>
+        <label><span>Таймаут файла, с</span><input id="file_timeout" type="number" min="0" step="1" placeholder="авто"></label>
+      </div>
+      <label><span>Глоссарий (необязательно)</span>
+        <input id="glossary" placeholder="glossary.tsv" autocomplete="off"></label>
+      <label><span>Ваниль для сверки (необязательно)</span>
+        <input id="vanilla" placeholder="папка с localisation игры" autocomplete="off"></label>
+    </section>
+
+    <section>
+      <h2>Поведение</h2>
+      <label><span>Битые строки</span><select id="broken_lines"></select></label>
+      <div class="check"><input type="checkbox" id="skip_translated"><span>Пропускать уже переведённые</span></div>
+      <div class="check"><input type="checkbox" id="no_report"><span>Не писать отчёт</span></div>
+    </section>
+
+    <section>
+      <h2>Кэш переводов</h2>
+      <div class="actions">
+        <button id="cache-stats">Статистика</button>
+        <button id="cache-clear" class="danger">Очистить</button>
+      </div>
+      <p class="hint">Кэш общий с консольной версией: одинаковые строки не переводятся дважды.</p>
+    </section>
+
+    <section>
+      <h2>Мод для лаунчера</h2>
+      <div class="check"><input type="checkbox" id="pack"><span>Собрать мод после перевода</span></div>
+      <div id="pack-fields" class="hidden">
+        <label><span>Имя в лаунчере</span><input id="mod_name" placeholder="Мой мод — русский" autocomplete="off"></label>
+        <div class="row">
+          <label><span>Папка мода</span><input id="mod_folder" placeholder="авто" autocomplete="off"></label>
+          <label><span>Версия</span><input id="mod_version" placeholder="1.0.0" autocomplete="off"></label>
+        </div>
+        <label><span>descriptor.mod переводимого мода</span>
+          <input id="mod_target" placeholder="C:\mods\MyMod\descriptor.mod" autocomplete="off"></label>
+        <div class="check"><input type="checkbox" id="mod_install"><span>Скопировать в папку игры mod\</span></div>
+        <label><span>Папка установки (если не по умолчанию)</span>
+          <input id="mod_install_dir" placeholder="авто" autocomplete="off"></label>
+      </div>
+    </section>
+
+    <div class="actions">
+      <button class="primary" id="start">Перевести</button>
+      <button id="dry">Только проверить</button>
+      <button class="danger" id="cancel" disabled>Остановить</button>
+    </div>
+  </div>
+
+  <div>
+    <section>
+      <h2>Ход работы</h2>
+      <div class="progress">
+        <div class="bar"><i id="bar"></i></div>
+        <div class="caption">
+          <span id="file-caption">файл — из —</span>
+          <span id="line-caption">строки —</span>
+        </div>
+      </div>
+      <ul class="files" id="files"></ul>
+      <pre id="log"></pre>
+    </section>
+  </div>
+</main>
+
+<footer>
+  <span id="about"></span>
+  <span id="cache"></span>
+  <button id="quit">Закрыть сервер</button>
+  <button id="clear-log">Очистить журнал</button>
+</footer>
+
+<script>
+// The token is the password to this window. It arrives in the address, which
+// means it would sit in the history and could leak through `Referer`; the server
+// also sends `Referrer-Policy: no-referrer`, and here the address is cleaned up
+// while the token moves to `sessionStorage`, so a reload still works.
+const storedToken = (() => {
+  try { return sessionStorage.getItem("hoi4-token"); } catch (error) { return null; }
+})();
+const token = new URLSearchParams(location.search).get("token") || storedToken || "";
+try { sessionStorage.setItem("hoi4-token", token); } catch (error) { /* приватный режим */ }
+if (location.search) history.replaceState(null, "", location.pathname);
+const STATUS_LABELS = {
+  written: "записан", rejected: "отклонён", error: "ошибка", cancelled: "отменён"
+};
+const STORE_KEY = "hoi4-translator-gui";
+
+const $ = (id) => document.getElementById(id);
+const api = (path) => `/api/${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
+
+let next = 0;           // absolute event index the page has seen
+let total = 0;          // files in the current run
+let finished = false;
+
+/* ---------------------------------------------------------------- settings */
+function settingsFromForm(dryRun) {
+  const text = (id) => $(id).value.trim();
+  const number = (id) => {
+    const raw = $(id).value.trim();
+    if (raw === "") return null;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : null;
+  };
+  const path = (id) => (text(id) === "" ? null : text(id));
+  return {
+    src: text("src"),
+    dst: text("dst"),
+    target: $("target").value,
+    source_lang: $("source_lang").value,
+    engine: $("engine").value,
+    source_encoding: $("source_encoding").value,
+    api_key: text("api_key") === "" ? null : text("api_key"),
+    glossary: path("glossary"),
+    vanilla: path("vanilla"),
+    concurrency: number("concurrency") || 1,
+    skip_translated: $("skip_translated").checked,
+    broken_lines: $("broken_lines").value,
+    dry_run: Boolean(dryRun),
+    no_report: $("no_report").checked,
+    file_timeout: number("file_timeout"),
+    make_mod: $("pack").checked && !dryRun ? {
+      display_name: text("mod_name"),
+      folder: path("mod_folder"),
+      version: path("mod_version"),
+      supported_version: null,
+      target: path("mod_target"),
+      install: $("mod_install").checked,
+      install_dir: path("mod_install_dir"),
+    } : null,
+  };
+}
+
+function saveSettings() {
+  const state = {};
+  for (const id of ["src", "dst", "target", "source_lang", "source_encoding", "engine",
+    "glossary", "vanilla", "concurrency", "file_timeout", "broken_lines", "mod_name",
+    "mod_folder", "mod_version", "mod_target", "mod_install_dir"]) {
+    state[id] = $(id).value;
+  }
+  for (const id of ["skip_translated", "no_report", "pack", "mod_install"]) {
+    state[id] = $(id).checked;
+  }
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch (error) { /* приватный режим */ }
+}
+
+function restoreSettings() {
+  let state = null;
+  try { state = JSON.parse(localStorage.getItem(STORE_KEY) || "null"); } catch (error) { state = null; }
+  if (!state) return;
+  for (const [id, value] of Object.entries(state)) {
+    const element = $(id);
+    if (!element) continue;
+    if (element.type === "checkbox") element.checked = Boolean(value);
+    else if (value === null || value === undefined) continue;
+    else element.value = value;
+  }
+  $("pack-fields").classList.toggle("hidden", !$("pack").checked);
+}
+
+/* ------------------------------------------------------------------- meta */
+async function loadMeta() {
+  const response = await fetch(api("meta"));
+  if (!response.ok) throw new Error(String(response.status));
+  const meta = await response.json();
+
+  $("target").innerHTML = meta.targets
+    .map((item) => `<option value="${item.code}">${item.name} (${item.code})</option>`).join("");
+  $("source_lang").innerHTML = meta.source_langs
+    .map((item) => `<option value="${item.code}">${item.name} (${item.code})</option>`).join("");
+  $("source_encoding").innerHTML = meta.source_encodings
+    .map((value) => `<option value="${value}">${value}</option>`).join("");
+  $("engine").innerHTML = meta.engines
+    .map((name) => `<option value="${name}">${name}</option>`).join("");
+  $("broken_lines").innerHTML = meta.broken_lines
+    .map((item) => `<option value="${item.value}">${item.label}</option>`).join("");
+  $("concurrency").value = meta.concurrency;
+  $("concurrency").max = meta.max_concurrency;
+  $("target").value = "ru";
+  $("source_lang").value = "en";
+  $("about").textContent = `версия ${meta.version}`;
+  $("cache").textContent = `кэш: ${meta.cache}`;
+  return meta;
+}
+
+/* --------------------------------------------------------------- rendering */
+function appendLog(kind, text) {
+  const log = $("log");
+  const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 40;
+  const line = document.createElement("div");
+  line.className = kind;
+  line.textContent = text;
+  log.appendChild(line);
+  while (log.childElementCount > 4000) log.removeChild(log.firstChild);
+  if (atBottom) log.scrollTop = log.scrollHeight;
+}
+
+function fileRow(path) {
+  const list = $("files");
+  const existing = [...list.children].find((row) => row.dataset.path === path);
+  if (existing) return existing;
+  const row = document.createElement("li");
+  row.dataset.path = path;
+  const name = document.createElement("span");
+  name.className = "path";
+  name.textContent = path;
+  name.title = path;
+  const chip = document.createElement("span");
+  chip.className = "chip working";
+  chip.textContent = "идёт";
+  row.append(name, chip);
+  list.appendChild(row);
+  return row;
+}
+
+function setStatus(kind, text) {
+  const pill = $("status");
+  pill.className = `pill ${kind}`;
+  $("status-text").textContent = text;
+}
+
+function setRunning(running) {
+  $("start").disabled = running;
+  $("dry").disabled = running;
+  $("cancel").disabled = !running;
+  if (running) setStatus("running", "работает");
+  else if (!finished) setStatus("", "готов");
+}
+
+function resetView() {
+  next = 0;
+  total = 0;
+  finished = false;
+  $("files").innerHTML = "";
+  $("log").innerHTML = "";
+  $("bar").style.width = "0%";
+  $("file-caption").textContent = "файл — из —";
+  $("line-caption").textContent = "строки —";
+  setStatus("", "готов");
+}
+
+function handleEvent(event) {
+  switch (event.kind) {
+    case "log":
+      appendLog(event.level, event.message);
+      break;
+    case "file_start":
+      total = event.total;
+      fileRow(event.path);
+      $("file-caption").textContent = `файл ${event.index} из ${event.total} · ${event.path}`;
+      $("line-caption").textContent = "строки —";
+      $("bar").style.width = `${Math.round(((event.index - 1) / Math.max(event.total, 1)) * 100)}%`;
+      break;
+    case "lines":
+      $("line-caption").textContent = `строки ${event.done} из ${event.total}`;
+      break;
+    case "file_done": {
+      const row = fileRow(event.path);
+      const chip = row.querySelector(".chip");
+      chip.className = `chip ${event.status}`;
+      chip.textContent = STATUS_LABELS[event.status] || event.status;
+      if (event.message) {
+        chip.title = event.message;
+        appendLog(event.status === "written" ? "info" : "warning", `${event.path}: ${event.message}`);
+      }
+      break;
+    }
+    case "done": {
+      finished = true;
+      $("bar").style.width = "100%";
+      const parts = [`готово: записано ${event.written}`];
+      if (event.failed) parts.push(`ошибок ${event.failed}`);
+      if (event.cancelled) parts.push("остановлено пользователем");
+      appendLog(event.failed ? "warning" : "done", parts.join(", "));
+      for (const path of event.report || []) appendLog("info", `отчёт: ${path}`);
+      if (event.module) appendLog("done", `мод собран: ${event.module}`);
+      setStatus(event.failed ? "error" : "ok", event.failed ? "с ошибками" : "готово");
+      setRunning(false);
+      break;
+    }
+    case "failed":
+      finished = true;
+      appendLog("error", event.message);
+      setStatus("error", "остановлено");
+      setRunning(false);
+      break;
+  }
+}
+
+async function poll() {
+  try {
+    const response = await fetch(api(`state?since=${next}`));
+    if (!response.ok) return;
+    const data = await response.json();
+    if (data.next < next) resetView();
+    next = data.next;
+    setRunning(data.running);
+    for (const event of data.events) handleEvent(event);
+  } catch (error) {
+    setStatus("error", "сервер не отвечает");
+  }
+}
+
+/* ------------------------------------------------------------------- runs */
+async function start(dryRun) {
+  const settings = settingsFromForm(dryRun);
+  if (!settings.src || !settings.dst) {
+    appendLog("error", "Укажите папку исходников и папку результата.");
+    return;
+  }
+  saveSettings();
+  resetView();
+  appendLog("info", dryRun ? "Проверка файлов без перевода…" : "Перевод запущен…");
+  const response = await fetch(api("run"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  }).catch(() => null);
+  if (!response) {
+    appendLog("error", "Сервер не отвечает: запустите программу заново.");
+    setStatus("error", "нет связи");
+    return;
+  }
+  if (!response.ok) {
+    const reason = await response.json().catch(() => ({ error: String(response.status) }));
+    appendLog("error", reason.error || "Не удалось запустить перевод.");
+    setRunning(false);
+    return;
+  }
+  setRunning(true);
+  poll();
+}
+
+async function post(path) {
+  await fetch(api(path), { method: "POST" }).catch(() => null);
+}
+
+$("start").addEventListener("click", () => start(false));
+$("dry").addEventListener("click", () => start(true));
+$("cancel").addEventListener("click", () => {
+  appendLog("warning", "Останавливаю после текущего файла…");
+  post("cancel");
+});
+$("quit").addEventListener("click", async () => {
+  await post("quit");
+  clearInterval(pollTimer);
+  setStatus("", "сервер остановлен");
+  $("start").disabled = true;
+  $("dry").disabled = true;
+  $("cancel").disabled = true;
+  appendLog("warning", "Сервер остановлен. Эту вкладку можно закрыть.");
+});
+$("clear-log").addEventListener("click", () => { $("log").innerHTML = ""; });
+$("cache-stats").addEventListener("click", async () => {
+  const response = await fetch(api("cache")).catch(() => null);
+  if (!response || !response.ok) {
+    appendLog("error", "Не удалось прочитать кэш переводов.");
+    return;
+  }
+  const data = await response.json();
+  for (const line of data.lines || []) appendLog("info", line);
+});
+$("cache-clear").addEventListener("click", async () => {
+  if (!confirm("Очистить кэш переводов? Эти строки придётся переводить заново.")) return;
+  const response = await fetch(api("cache/clear"), { method: "POST" }).catch(() => null);
+  if (!response || !response.ok) {
+    appendLog("error", "Не удалось очистить кэш переводов.");
+    return;
+  }
+  const data = await response.json();
+  appendLog("warning", `Из кэша удалено переводов: ${data.removed}`);
+});
+$("pack").addEventListener("change", () => {
+  $("pack-fields").classList.toggle("hidden", !$("pack").checked);
+  saveSettings();
+});
+for (const id of ["src", "dst", "glossary", "vanilla", "mod_name", "mod_folder", "mod_version",
+  "mod_target", "mod_install_dir", "concurrency", "file_timeout"]) {
+  $(id).addEventListener("change", saveSettings);
+}
+for (const id of ["target", "source_lang", "engine", "broken_lines", "skip_translated",
+  "no_report", "mod_install"]) {
+  $(id).addEventListener("change", saveSettings);
+}
+
+loadMeta().then(restoreSettings).then(poll).catch((error) => {
+  setStatus("error", "нет связи");
+  appendLog("error", String(error.message) === "401"
+    ? "Ключ доступа не подошёл: откройте адрес, который напечатала программа, ещё раз."
+    : `Не удалось получить настройки от сервера: ${error}`);
+});
+const pollTimer = setInterval(poll, 700);
+</script>
+</body>
+</html>

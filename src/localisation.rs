@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::{bail, Context, Result};
 use regex::Regex;
@@ -194,28 +194,50 @@ pub const SOURCE_ENCODINGS: [&str; 7] = [
 /// BOM the order is the one the Python build used — UTF-8, then cp1251, then
 /// cp1252, then latin-1 — but a candidate only wins when it decodes the whole
 /// file without an undefined byte, which is what makes cp1252 reachable at all.
+/// Values `--source-encoding` accepts besides `auto`, in the order the help lists
+/// them. One list for the argument check, the decoder and the window.
+pub const FORCED_ENCODINGS: [&str; 4] = ["utf-8", "cp1251", "cp1252", "latin-1"];
+
+/// Is this a value `set_source_encoding` understands? `auto` is not: it means
+/// "do not force anything".
+pub fn is_forced_encoding(value: &str) -> bool {
+    let normalized = value.trim().to_lowercase();
+    FORCED_ENCODINGS.contains(&normalized.as_str())
+}
+
 /// `--source-encoding`: a file whose single-byte encoding cannot be guessed.
-static FORCED_ENCODING: OnceLock<String> = OnceLock::new();
+///
+/// A cell, not a `OnceLock`: the window runs job after job, and a second run
+/// with `auto` must actually go back to guessing.
+static FORCED_ENCODING: Mutex<Option<String>> = Mutex::new(None);
 
 /// Force the source decoder (`utf-8`, `cp1251`, `cp1252`, `latin-1`).
 ///
 /// Guessing only works when the byte range is unambiguous; a German or Polish
 /// file saved without a BOM looks like cp1251 to the detector, and only the user
-/// knows what it really is.
+/// knows what it really is. `auto` or an empty string clears the override.
 pub fn set_source_encoding(encoding: &str) {
     let normalized = encoding.trim().to_lowercase();
-    if normalized.is_empty() || normalized == "auto" {
-        return;
-    }
-    let _ = FORCED_ENCODING.set(normalized);
+    let mut cell = FORCED_ENCODING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *cell = if normalized.is_empty() || normalized == "auto" {
+        None
+    } else {
+        Some(normalized)
+    };
 }
 
-fn forced_source_encoding() -> Option<&'static str> {
-    FORCED_ENCODING.get().map(String::as_str)
+fn forced_source_encoding() -> Option<String> {
+    let cell = FORCED_ENCODING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cell.clone()
 }
 
 fn decode_source(bytes: &[u8]) -> (String, &'static str) {
-    decode_source_with(bytes, forced_source_encoding())
+    let forced = forced_source_encoding();
+    decode_source_with(bytes, forced.as_deref())
 }
 
 fn decode_source_with(bytes: &[u8], forced: Option<&str>) -> (String, &'static str) {

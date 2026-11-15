@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::config::{atomic_write_localisation, LogTag};
@@ -97,21 +97,26 @@ pub struct FileOutcome {
 /// A fixed cap silently dropped big files: retries with exponential backoff can
 /// legitimately cost tens of seconds for a single line.
 pub fn file_translation_timeout(line_count: usize) -> f64 {
-    if let Some(Some(seconds)) = file_timeout_override().get() {
-        return *seconds;
+    if let Some(seconds) = *file_timeout_override() {
+        return seconds;
     }
     120.0f64.max(60.0 + 0.35 * line_count as f64)
 }
 
-/// `--file-timeout`, set once by the CLI; `None` keeps the formula above.
-fn file_timeout_override() -> &'static OnceLock<Option<f64>> {
-    static CELL: OnceLock<Option<f64>> = OnceLock::new();
-    &CELL
+/// `--file-timeout`; `None` keeps the formula above.
+///
+/// A cell, not a `OnceLock`: the CLI sets this once per process, but the window
+/// runs one job after another, and the second run must be able to pick its own
+/// budget — including going back to the calculated one.
+fn file_timeout_override() -> std::sync::MutexGuard<'static, Option<f64>> {
+    static CELL: OnceLock<Mutex<Option<f64>>> = OnceLock::new();
+    let cell = CELL.get_or_init(|| Mutex::new(None));
+    cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Replace the per-file budget. `None` restores the calculated default.
 pub fn set_file_timeout(seconds: Option<f64>) {
-    let _ = file_timeout_override().set(seconds);
+    *file_timeout_override() = seconds;
 }
 
 fn finish(
