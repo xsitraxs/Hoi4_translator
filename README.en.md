@@ -112,6 +112,7 @@ hoi4-translator --src examples/demo-mod --dst /tmp/out --target ru --dry-run
 | `--vanilla DIR` | the game's `localisation` folder, to reuse official translations |
 | `--skip-translated` | do not translate lines already translated in the output folder |
 | `--broken-lines reject\|keep-original` | what to do with a line that breaks the format |
+| `--source-encoding ENC` | source encoding when detection is wrong: `auto`, `utf-8`, `cp1251`, `cp1252`, `latin-1` |
 | `--concurrency N` | parallel requests per file (15 by default, at most 64) |
 | `--no-report` | skip the JSON/CSV report |
 | `--file-timeout SECONDS` | per-file translation budget (0 — no limit) |
