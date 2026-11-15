@@ -10,7 +10,7 @@ use std::sync::Once;
 
 use clap::{ArgAction, Parser};
 
-use crate::cache::{self, TranslationCache};
+use crate::cache::TranslationCache;
 use crate::config::{self, LogTag, MAX_CONCURRENCY};
 use crate::glossary::Glossary;
 use crate::inspect::{format_report, inspect_files};
@@ -212,7 +212,7 @@ fn handle_cache_command(cli: &Cli) -> i32 {
         println!("Из кэша удалено переводов: {removed}");
     }
     if cli.cache_stats {
-        for line in cache::describe(&path, &cache.stats()) {
+        for line in TranslationCache::describe(&path, &cache.stats()) {
             println!("{line}");
         }
     }
