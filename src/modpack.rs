@@ -776,7 +776,8 @@ mod tests {
         let root = temp_dir("flat");
         fs::create_dir_all(&root).expect("dirs");
         let mut bytes = vec![0xEF, 0xBB, 0xBF];
-        bytes.extend_from_slice(b"l_russian:\n A:0 \"А\"\n");
+        // A normal string, not a byte string: byte literals must stay ASCII.
+        bytes.extend_from_slice("l_russian:\n A:0 \"А\"\n".as_bytes());
         fs::write(root.join("a_l_russian.yml"), bytes).expect("write");
 
         let result = build(&options(root.clone(), root.clone()), &mut |_, _| {}).expect("built");
